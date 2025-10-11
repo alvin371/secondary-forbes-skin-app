@@ -63,5 +63,6 @@ jobs:
         run: ansible-galaxy collection install community.docker:==3.10.0
 
       - name: Deploy with Ansible
+        shell: bash
         run: |
           ansible-playbook -i inventory.ini deploy/develop.yml --private-key key.pem -e "CI_COMMIT_SHORT_SHA=${GITHUB_SHA::8}"
