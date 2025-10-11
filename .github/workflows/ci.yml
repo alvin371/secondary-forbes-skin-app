@@ -59,6 +59,11 @@ jobs:
           echo "${{ secrets.ANSIBLE_PRIVATE_KEY }}" > key.pem
           chmod 600 key.pem
 
+      - name: Add remote host to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H cntbo_forbes >> ~/.ssh/known_hosts
+
       - name: Install required collections
         run: ansible-galaxy collection install community.docker:==3.10.0
 
