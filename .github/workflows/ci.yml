@@ -59,15 +59,12 @@ jobs:
           echo "${{ secrets.ANSIBLE_PRIVATE_KEY }}" > key.pem
           chmod 600 key.pem
 
-      - name: Add remote host to known_hosts
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
-
       - name: Install required collections
         run: ansible-galaxy collection install community.docker:==3.10.0
 
       - name: Deploy with Ansible
         shell: bash
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: False
         run: |
           ansible-playbook -i inventory.ini deploy/develop.yml --private-key key.pem -e "CI_COMMIT_SHORT_SHA=${GITHUB_SHA::8}"
