@@ -1,14 +1,13 @@
 ---
 - name: Deployment to srv
-
   hosts: cntbo_forbes
   remote_user: forbes
   gather_facts: no
   vars:
-    working_directory: "/home/forbes/artifact/forbes-skin"
-    stack_name: "forbes"
+    working_directory: "/home/forbes/artifact/sec-forbes-skin"
+    stack_name: "sec-forbes"
     container_version: "{{ lookup('env', 'GITHUB_SHA') | regex_replace('^(.{8}).*$', '\\1') }}"
-    container_image: "gilangp/forbes-app:develop{{ container_version }}"
+    container_image: "gilangp/sec-forbes-app:develop{{ container_version }}"
 
   tasks:
   - name: update app docker image
