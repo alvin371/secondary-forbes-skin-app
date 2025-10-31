@@ -1,8 +1,15 @@
 <?php
 
 defined('BASEPATH') or exit('No direct script access allowed');
+require_once __DIR__ . '/../../application/helpers/env_helper.php';
 class Marketplace_account extends CI_Controller
 {
+    function __construct()
+    {
+        parent::__construct();
+        $this->load->helper('env');
+        $this->tiktok_service_id = env('TIKTOK_SERVICE_ID', '');
+    }
     public function index()
     {
         if ($_GET['keyword_category']) {
@@ -402,7 +409,7 @@ class Marketplace_account extends CI_Controller
         if ($dt['channel'] == "tiktok") {
         } else if ($dt['channel'] == "shopee") {
         } else {
-            $url = 'https://app.bhskin.co.id/api/auth/lazada';
+            $url = 'https://app.acnenosystem.com/api/auth/lazada';
             // $url = base_url() . 'api/auth/lazada';
             $url = 'https://auth.lazada.com/oauth/authorize?response_type=code&force_auth=true&redirect_uri=' . $url . '&client_id=' . $app_key;
             return redirect($url);
@@ -473,7 +480,8 @@ class Marketplace_account extends CI_Controller
 
         $type = $_GET['type'];
         if ($type == "TIKTOK") {
-            $url = "https://services.tiktokshop.com/open/authorize?service_id=7346761498458113797";
+            $service_id = $this->tiktok_service_id;
+            $url = "https://services.tiktokshop.com/open/authorize?service_id=$service_id";
             redirect($url);
         } else  if ($type == "LAZADA") {
 
@@ -482,7 +490,7 @@ class Marketplace_account extends CI_Controller
 
             $app_key = $this->app_key_lazada;
             $redirectUrl = base_url() . 'api/marketplace/callback/lazada';
-            $redirectUrl = 'https://app.bhskin.co.id/api/marketplace/callback/lazada';
+            $redirectUrl = 'https://app.acnenosystem.com/api/marketplace/callback/lazada';
 
             $url = 'https://auth.lazada.com/oauth/authorize?response_type=code&force_auth=true&redirect_uri=' . $redirectUrl . '&client_id=' . $app_key;
             redirect($url);

@@ -19,7 +19,7 @@
 		font-size: 14px;
 	}
 </style>
-<form action="<?= base_url() ?>/endorse/store" method="POST" id="form-modal">
+<form action="<?= base_url() ?>/endorse/store" method="POST" id="form-modal" enctype="multipart/form-data">
 	<input type="hidden" name="id" value="<?= $data['id'] ?>">
 	<input type="hidden" name="dt[id_campaign]" value="<?= $detail['id'] ?>">
 	<input type="hidden" name="id_campaign" value="<?= $detail['id'] ?>">
@@ -48,7 +48,7 @@
 			<label for="">Status Endorse</label>
 			<select type="text" class="form-control" name="dt[status_endorse]">
 				<?php
-				$arr = array("Review", "Hold", "Acc", "Draft Content", "Posted Content", "Reject", "Problem");
+				$arr = array("Review", "ACC", "Pengiriman Produk", "Brief Content", "Draft Content", "Posted Content", "Rejected");
 				foreach ($arr as $v2) {
 					$text = $data['status_endorse'] == $v2 ? 'selected' : '';
 					echo "<option $text value='$v2'>$v2</option>";
@@ -174,6 +174,26 @@
 		<div class="col-md-6">
 			<label for="">Kode Ads</label>
 			<input type="text" class="form-control" name="dt[kode_ads]" value="<?= $data['kode_ads'] ?>">
+		</div>
+
+		<div class="col-md-6">
+			<label for="">Category KOL</label>
+			<select class="form-control" name="dt[category_kol]">
+				<option value="">Pilih Category KOL</option>
+				<?php
+				$current_category = isset($data['category_kol']) ? $data['category_kol'] : '';
+				foreach ($niche as $v2) {
+					$selected = ($current_category == $v2['niche']) ? 'selected' : '';
+					echo "<option $selected value=\"{$v2['niche']}\">{$v2['niche']}</option>";
+				}
+				?>
+			</select>
+		</div>
+
+		<div class="col-md-6">
+			<label for="">Upload Media (Image/Video)</label>
+			<input type="file" class="form-control" name="media_attachment" accept="image/*,video/*">
+			<small class="form-text text-muted">Format: JPG, PNG, MP4, MOV, AVI (Max: 10MB)</small>
 		</div>
 
 		<!-- <div class="col-md-6">
