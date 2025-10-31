@@ -1177,18 +1177,14 @@ class Endorse extends BaseController
         $data['current_page'] = $current_page;
 
         $query = $this->mymodel->selectWithQuery("
-            SELECT 
-                e.*, 
+            SELECT
+                e.*,
                 (e.likes + e.comment + e.share_save) AS engagement,
-                i.contact, 
-                i.tipe_kontak 
-            FROM 
+                i.contact,
+                i.tipe_kontak
+            FROM
                 (SELECT DISTINCT * FROM endorse WHERE id_campaign = '$id_campaign' $qry) AS e
-            LEFT JOIN (
-                SELECT username, contact, tipe_kontak 
-                FROM influencer 
-                GROUP BY username
-            ) AS i ON e.nama_creator = i.username
+            LEFT JOIN influencer AS i ON e.nama_creator = i.username
             ORDER BY $sort_column $sort_order
             LIMIT $offset, $limit
         ");
@@ -1812,19 +1808,19 @@ class Endorse extends BaseController
         }
 
         $data['product_all'] = $this->mymodel->selectWithQuery("
-            SELECT id, name 
-            FROM product 
-            WHERE 
-                is_operational = 0 
-                AND status = 'Aktif' 
+            SELECT id, name
+            FROM product
+            WHERE
+                is_operational = 0
+                AND status = 'Aktif'
                 AND (
-                    is_varian = 1 
+                    is_varian = 1
                     OR (is_varian = 0 AND (parent_id IS NULL OR parent_id = ''))
                 )
             ORDER BY name ASC
         ");
 
-
+        $data['niche'] = $this->mymodel->selectWithQuery("SELECT DISTINCT niche FROM niche ORDER BY niche ASC");
 
         $query = $this->mymodel->selectWithQuery("SELECT * FROM brand ORDER BY name ASC");
 
@@ -1902,6 +1898,33 @@ class Endorse extends BaseController
                 $newFileName = $dir . $newfile;
                 rename($currentFileName, $newFileName);
                 $dt['img'] = $newfile;
+            }
+        }
+
+        // Handle media_attachment upload (image/video)
+        if (isset($_FILES['media_attachment']) && $_FILES['media_attachment']['name']) {
+            $upload_path = FCPATH . 'assets/img/endorse/';
+
+            // Ensure directory exists
+            if (!is_dir($upload_path)) {
+                mkdir($upload_path, 0755, true);
+            }
+
+            $config['upload_path'] = $upload_path;
+            $config['allowed_types'] = 'jpg|jpeg|png|mp4|mov|avi';
+            $config['max_size'] = 10240; // 10MB
+            $config['file_name'] = DATE('Ymdhis') . '_media_' . $id;
+            $config['overwrite'] = FALSE;
+
+            $this->load->library('upload', $config);
+
+            if ($this->upload->do_upload('media_attachment')) {
+                $upload_data = $this->upload->data();
+                $dt['media_attachment'] = $upload_data['file_name'];
+            } else {
+                $msg = 'Upload media gagal: ' . $this->upload->display_errors('', '');
+                echo $this->template->alert_danger($msg);
+                die;
             }
         }
 
@@ -2180,19 +2203,19 @@ class Endorse extends BaseController
         }
 
         $data['product_all'] = $this->mymodel->selectWithQuery("
-            SELECT id, name 
-            FROM product 
-            WHERE 
-                is_operational = 0 
-                AND status = 'Aktif' 
+            SELECT id, name
+            FROM product
+            WHERE
+                is_operational = 0
+                AND status = 'Aktif'
                 AND (
-                    is_varian = 1 
+                    is_varian = 1
                     OR (is_varian = 0 AND (parent_id IS NULL OR parent_id = ''))
                 )
             ORDER BY name ASC
         ");
 
-
+        $data['niche'] = $this->mymodel->selectWithQuery("SELECT DISTINCT niche FROM niche ORDER BY niche ASC");
 
         $this->load->view("endorse/create", $data);
     }
@@ -2303,6 +2326,33 @@ class Endorse extends BaseController
                 $newFileName = $dir . $newfile;
                 rename($currentFileName, $newFileName);
                 $dt['img'] = $newfile;
+            }
+        }
+
+        // Handle media_attachment upload (image/video)
+        if (isset($_FILES['media_attachment']) && $_FILES['media_attachment']['name']) {
+            $upload_path = FCPATH . 'assets/img/endorse/';
+
+            // Ensure directory exists
+            if (!is_dir($upload_path)) {
+                mkdir($upload_path, 0755, true);
+            }
+
+            $config['upload_path'] = $upload_path;
+            $config['allowed_types'] = 'jpg|jpeg|png|mp4|mov|avi';
+            $config['max_size'] = 10240; // 10MB
+            $config['file_name'] = DATE('Ymdhis') . '_media';
+            $config['overwrite'] = FALSE;
+
+            $this->load->library('upload', $config);
+
+            if ($this->upload->do_upload('media_attachment')) {
+                $upload_data = $this->upload->data();
+                $dt['media_attachment'] = $upload_data['file_name'];
+            } else {
+                $msg = 'Upload media gagal: ' . $this->upload->display_errors('', '');
+                echo $this->template->alert_danger($msg);
+                die;
             }
         }
 
@@ -3281,7 +3331,7 @@ class Endorse extends BaseController
 
     //     // === MAPPING DATA UNTUK REPLACE (sesuai format ${variable}) ===
     //     $replacements = [
-    //         'brand'                         => $campaign['brand_name'] ?? 'BHSKIN',
+    //         'brand'                         => $campaign['brand_name'] ?? 'ACNENO SYSTEM',
     //         'pic'                           => $picName,
     //         'full_name'                     => $inf['full_name'] ?? $inf['name'] ?? $nama_creator,
     //         'alamat'                        => $inf['address'] ?? '-',
@@ -3595,7 +3645,7 @@ class Endorse extends BaseController
     //     }
 
     //     $this->email->clear(TRUE);
-    //     $this->email->from('mou@bhskin.co.id', 'BH Skin - MoU System');
+    //     $this->email->from('mou@acnenosystem.com', 'Acneno System - MoU System');
     //     $this->email->to($email);
     //     $this->email->subject('MoU Kerja Sama - '.$inf['full_name']);
     //     $this->email->message("Halo {$inf['full_name']},\n\nBerikut terlampir MoU kerja sama.\n\nTerima kasih.");

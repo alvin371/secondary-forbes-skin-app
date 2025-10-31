@@ -259,12 +259,71 @@ class Auth extends CI_Controller
 
     public function signup_process()
     {
+        // Google reCAPTCHA v3 Verification
+        $recaptcha_token = isset($_POST['g-recaptcha-response']) ? $_POST['g-recaptcha-response'] : '';
+
+        if (empty($recaptcha_token)) {
+            $msg = 'Please complete the security verification!';
+            echo $this->template->alert_danger($msg);
+            return;
+        }
+
+        // Verify reCAPTCHA token with Google
+        $recaptcha_secret = env('RECAPTCHA_SECRET_KEY');
+        $recaptcha_url = 'https://www.google.com/recaptcha/api/siteverify';
+
+        $recaptcha_data = array(
+            'secret' => $recaptcha_secret,
+            'response' => $recaptcha_token,
+            'remoteip' => $_SERVER['REMOTE_ADDR']
+        );
+
+        $recaptcha_options = array(
+            'http' => array(
+                'method' => 'POST',
+                'header' => 'Content-Type: application/x-www-form-urlencoded',
+                'content' => http_build_query($recaptcha_data)
+            )
+        );
+
+        $recaptcha_context = stream_context_create($recaptcha_options);
+        $recaptcha_response = file_get_contents($recaptcha_url, false, $recaptcha_context);
+        $recaptcha_result = json_decode($recaptcha_response, true);
+
+        // Check reCAPTCHA verification result
+        if (!$recaptcha_result['success']) {
+            log_message('error', 'reCAPTCHA verification failed: ' . json_encode($recaptcha_result));
+            $msg = 'Security verification failed. Please try again!';
+            echo $this->template->alert_danger($msg);
+            return;
+        }
+
+        // Check reCAPTCHA score (v3 returns a score between 0.0 and 1.0)
+        // Score >= 0.5 is generally considered human
+        if (!isset($recaptcha_result['score']) || $recaptcha_result['score'] < 0.5) {
+            log_message('warning', 'reCAPTCHA score too low: ' . ($recaptcha_result['score'] ?? 'N/A') . ' for IP: ' . $_SERVER['REMOTE_ADDR']);
+            $msg = 'Your request appears suspicious. Please try again or contact support if you believe this is an error.';
+            echo $this->template->alert_danger($msg);
+            return;
+        }
+
+        // Check if action matches
+        if (!isset($recaptcha_result['action']) || $recaptcha_result['action'] !== 'signup') {
+            log_message('error', 'reCAPTCHA action mismatch: ' . ($recaptcha_result['action'] ?? 'N/A'));
+            $msg = 'Security verification failed. Please try again!';
+            echo $this->template->alert_danger($msg);
+            return;
+        }
+
+        // Log successful reCAPTCHA verification
+        log_message('info', 'reCAPTCHA verification successful - Score: ' . $recaptcha_result['score'] . ' for IP: ' . $_SERVER['REMOTE_ADDR']);
+
         $full_name = trim($_POST['full_name']);
         $username = trim($_POST['username']);
         $email = trim($_POST['email']);
         $password = $_POST['password'];
         $confirm_password = $_POST['confirm_password'];
-        
+
         // Validation
         if (empty($full_name)) {
             $msg = 'Full name is required!';
@@ -327,16 +386,26 @@ class Auth extends CI_Controller
             return;
         }
         
-        // Check if username already exists
-        $existing_username = $this->mymodel->selectWithQuery("SELECT id FROM user WHERE LOWER(username) = '" . strtolower($this->db->escape_str($username)) . "'");
+        // Check if username already exists (case-insensitive)
+        // Use query builder for better security
+        $this->db->select('id');
+        $this->db->from('user');
+        $this->db->where('LOWER(username)', strtolower($username));
+        $existing_username = $this->db->get()->result_array();
+
         if (!empty($existing_username)) {
             $msg = 'Username already exists! Please choose a different username.';
             echo $this->template->alert_danger($msg);
             return;
         }
-        
-        // Check if email already exists
-        $existing_email = $this->mymodel->selectWithQuery("SELECT id FROM user WHERE LOWER(email) = '" . strtolower($this->db->escape_str($email)) . "'");
+
+        // Check if email already exists (case-insensitive)
+        // Use query builder for better security
+        $this->db->select('id');
+        $this->db->from('user');
+        $this->db->where('LOWER(email)', strtolower($email));
+        $existing_email = $this->db->get()->result_array();
+
         if (!empty($existing_email)) {
             $msg = 'Email already exists! Please use a different email address.';
             echo $this->template->alert_danger($msg);
@@ -371,47 +440,87 @@ class Auth extends CI_Controller
         }
         
         // Prepare user data (exclude created_by if it has foreign key constraint)
+        // Note: Do NOT use escape_str() here - CodeIgniter's query builder handles escaping automatically
         $user_data = array(
-            'full_name' => $this->db->escape_str($full_name),
-            'username' => $this->db->escape_str($username),
-            'email' => $this->db->escape_str($email),
+            'full_name' => $full_name,
+            'username' => $username,
+            'email' => $email,
             'password' => password_hash($password, PASSWORD_DEFAULT), // Use secure hashing
             'role' => $guest_role_id,
             'role_text' => $guest_role_display,
             'status' => 'Aktif',
-            'created_at' => date('Y-m-d H:i:s')
+            'created_at' => date('Y-m-d H:i:s'),
+            'code' => strtoupper($username) // Add code field (typically uppercase username)
             // Note: created_by omitted for self-registration to avoid foreign key issues
         );
-        
+
         // Start transaction
         $this->db->trans_start();
-        
-        // Insert user
-        if ($this->db->insert('user', $user_data)) {
-            $user_id = $this->db->insert_id();
-            
-            // Assign role in RBAC system
-            $role_assignment = array(
-                'user_id' => $user_id,
-                'role_id' => $guest_role_id,
-                'assigned_at' => date('Y-m-d H:i:s')
-                // Note: assigned_by omitted for self-registration (will be NULL by default)
-            );
-            $this->db->insert('user_roles', $role_assignment);
-            
-            $this->db->trans_complete();
-            
-            if ($this->db->trans_status() === FALSE) {
-                $msg = 'Registration failed. Please try again.';
-                echo $this->template->alert_danger($msg);
-            } else {
-                $msg = 'Registration successful! You can now login with your credentials.';
-                echo $this->template->alert_success($msg);
-            }
-        } else {
+
+        // Insert user - don't check return value, use trans_status instead
+        $this->db->insert('user', $user_data);
+        $user_id = $this->db->insert_id();
+
+        // Check for database errors
+        $db_error = $this->db->error();
+        if (!empty($db_error['code']) && $db_error['code'] != 0) {
             $this->db->trans_rollback();
+            log_message('error', 'Signup insert failed with DB error: ' . json_encode($db_error) . ' | User data: ' . json_encode($user_data));
+
+            // User-friendly error messages based on error type
+            if (strpos($db_error['message'], 'Duplicate entry') !== false) {
+                $msg = 'This username or email is already registered. Please use different credentials.';
+            } else {
+                $msg = 'Registration failed due to a database error. Please try again or contact support.';
+            }
+            echo $this->template->alert_danger($msg);
+            return;
+        }
+
+        // If insert_id is 0, it might be a table configuration issue
+        if (empty($user_id) || $user_id <= 0) {
+            // Try to get the last inserted user by username as fallback
+            $this->db->select('id');
+            $this->db->from('user');
+            $this->db->where('username', $username);
+            $this->db->order_by('created_at', 'DESC');
+            $this->db->limit(1);
+            $user_check = $this->db->get()->row_array();
+
+            if (!empty($user_check) && !empty($user_check['id'])) {
+                $user_id = $user_check['id'];
+                log_message('warning', 'insert_id() returned 0, but found user ID via query: ' . $user_id . ' for username: ' . $username);
+            } else {
+                $this->db->trans_rollback();
+                log_message('error', 'Signup failed: insert_id returned 0 and could not find user. Table may lack AUTO_INCREMENT. User: ' . $username);
+                $msg = 'Registration failed. The user table may need database maintenance. Please contact support with error code: DB_AUTO_INCREMENT';
+                echo $this->template->alert_danger($msg);
+                return;
+            }
+        }
+
+        // Assign role in RBAC system
+        $role_assignment = array(
+            'user_id' => $user_id,
+            'role_id' => $guest_role_id,
+            'assigned_at' => date('Y-m-d H:i:s')
+            // Note: assigned_by omitted for self-registration (will be NULL by default)
+        );
+        $this->db->insert('user_roles', $role_assignment);
+
+        // Complete transaction
+        $this->db->trans_complete();
+
+        // Check transaction status
+        if ($this->db->trans_status() === FALSE) {
+            $db_error = $this->db->error();
+            log_message('error', 'Signup transaction failed for username: ' . $username . ' | DB Error: ' . json_encode($db_error));
             $msg = 'Registration failed. Please try again.';
             echo $this->template->alert_danger($msg);
+        } else {
+            log_message('info', 'User registered successfully: ' . $username . ' (ID: ' . $user_id . ')');
+            $msg = 'Registration successful! You can now login with your credentials.';
+            echo $this->template->alert_success($msg);
         }
     }
 
