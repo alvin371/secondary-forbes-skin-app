@@ -803,7 +803,7 @@ class Template
 
     function title()
     {
-        return 'Acneno System';
+        return 'BKA System';
     }
 
     function hex($i)
