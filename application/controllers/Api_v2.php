@@ -4744,6 +4744,42 @@ class Api_v2 extends CI_Controller
         $json = array();
         if ($dt['order_id']) {
             $this->db->insert('webhook', $dt);
+
+            // Step 2: Automatically trigger detail sync to populate full order data
+            // Call webhook refresh to populate order details (customer, products, payment info)
+            // Return full JSON response with sync data
+            $marketplace = strval($dt['marketplace']);
+            if ($order_id && $shop_id) {
+                try {
+                    // Temporarily set $_GET parameters for marketplace_order_detail function
+                    $_GET['marketplace'] = $marketplace;
+                    $_GET['order_id'] = $order_id;
+                    $_GET['shop_id'] = $shop_id;
+                    $_GET['mode'] = 'webhook';
+
+                    // Call the existing sync process that populates all order data
+                    $this->marketplace_order_detail();
+
+                    // The marketplace_order_detail() function will handle the response
+                    // and die, so the code below won't execute
+                } catch (Exception $e) {
+                    // Log error but still return success webhook response
+                    error_log("Webhook order sync error: " . $e->getMessage());
+
+                    // Return standard webhook response
+                    $dtt = array();
+                    $dtt['order_id'] = strval($order_id);
+                    $dtt['shop_id'] = strval($shop_id);
+                    $dtt['marketplace'] = strval($dt['marketplace']);
+                    $html = array();
+                    $html['status'] = true;
+                    $html['data'] = $dtt;
+                    $html['msg'] = "BKA System webhook live access has been successful!";
+                    echo json_encode($html, true);
+                    die;
+                }
+            }
+
             $dtt = array();
             $dtt['order_id'] = strval($order_id);
             $dtt['shop_id'] = strval($shop_id);
