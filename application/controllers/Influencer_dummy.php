@@ -68,9 +68,7 @@ class Influencer_dummy extends CI_Controller {
 
         $data['brands'] = $this->db->select('code')->get('brand')->result();
         $data['pics'] = $this->db
-            ->select('full_name')
-            ->where_in('role', [1, 2, 11])
-            ->where('id !=', 1)
+            ->order_by('full_name', 'ASC')
             ->get('user')
             ->result();
         

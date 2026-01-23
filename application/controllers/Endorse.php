@@ -1789,7 +1789,7 @@ class Endorse extends BaseController
 
         $data['data'] = $query[0];
 
-        $data['pic'] = $this->mymodel->selectWithQuery("SELECT * FROM user WHERE role IN ('1', '2', '11') ORDER BY full_name ASC");
+        $data['pic'] = $this->mymodel->selectWithQuery("SELECT * FROM user ORDER BY full_name ASC");
         $data['brand'] = $this->mymodel->selectWithQuery("SELECT * FROM brand ORDER BY code ASC");
         $data['influencer'] = $this->mymodel->selectWithQuery("SELECT * FROM influencer ORDER BY full_name ASC");
         $data_row = $this->mymodel->selectWithQuery("SELECT product, product_text FROM endorse_campaign WHERE id = '$id_campaign'");
@@ -2184,7 +2184,7 @@ class Endorse extends BaseController
         $id_campaign = $_GET['id'];
         // print_r($_GET);
 
-        $data['pic'] = $this->mymodel->selectWithQuery("SELECT * FROM user WHERE role IN ('1', '2', '11') ORDER BY full_name ASC");
+        $data['pic'] = $this->mymodel->selectWithQuery("SELECT * FROM user ORDER BY full_name ASC");
         $data['brand'] = $this->mymodel->selectWithQuery("SELECT * FROM brand ORDER BY code ASC");
         $data['influencer'] = $this->mymodel->selectWithQuery("SELECT * FROM influencer ORDER BY full_name ASC");
         $data_row = $this->mymodel->selectWithQuery("SELECT product, product_text FROM endorse_campaign WHERE id = '$id_campaign'");
