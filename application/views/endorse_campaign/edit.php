@@ -260,9 +260,12 @@
                     if (response.indexOf("success") !== -1) {
                         $(".form-message").hide().html(response).slideDown("fast");
                         setTimeout(function() {
-                            window.location.href = "";
+                            if (typeof window.loadMoreData === 'function') {
+                                window.loadMoreData();
+                            }
+                            $("#modal-form").modal('hide');
                             $(".btn-send").removeClass("disabled").html('Simpan Data').attr('disabled', false);
-                        }, 2500);
+                        }, 1200);
                     } else {
                         $(".form-message").hide().html(response).slideDown("fast");
                         $(".btn-send").removeClass("disabled").html('Simpan Data').attr('disabled', false);
@@ -287,4 +290,3 @@
     }
 
 </script>
-
