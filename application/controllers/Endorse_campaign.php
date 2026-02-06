@@ -466,9 +466,7 @@ class Endorse_campaign extends BaseController
         if ($ids) {
             $list = $this->mymodel->selectWithQuery("SELECT SUM(likes) as likes, SUM(comment) as comment,SUM(share_save) as share_save, SUM(views) as views
             FROM endorse_logs
-            WHERE id_endorse IN ($ids)
-            GROUP BY id_endorse
-            ORDER BY id DESC");
+            WHERE id_endorse IN ($ids)");
             $list = $list[0];
             // print_r($list);
             // die;
