@@ -412,7 +412,7 @@
                 // Show progress modal
                 Swal.fire({
                     title: 'Processing...',
-                    html: '<div style="margin: 20px 0;"><div class="progress" style="height: 25px;"><div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" id="sync-progress-bar">0%</div></div></div><p id="sync-progress-text">Initializing...</p>',
+                    html: '<div style="margin: 20px 0;"><div class="progress" style="height: 25px;"><div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" id="sync-progress-bar">0%</div></div></div><p id="sync-progress-text">Initializing...</p><small id="sync-speed-text" style="color: #666;">Processing 20 records at once...</small>',
                     allowOutsideClick: false,
                     allowEscapeKey: false,
                     showConfirmButton: false,
@@ -421,43 +421,60 @@
                     }
                 });
                 
-                // Batch processing function
-                function processBatch(offset = 0) {
+                let totalRecords = 0;
+                let processedRecords = 0;
+                let activeWorkers = 0;
+                const maxWorkers = 2; // Parallel workers
+                const batchSize = 10; // Records per batch
+                
+                // Parallel batch processor
+                function processBatch(workerId, offset) {
+                    activeWorkers++;
+                    
                     $.ajax({
                         url: '<?= base_url() ?>influencer/sync_external_process',
                         type: 'POST',
                         dataType: 'json',
                         data: {
-                            batch_size: 5,
+                            batch_size: batchSize,
                             offset: offset
                         },
                         success: function(response) {
-                            console.log("Batch response", response);
+                            console.log(`Worker ${workerId} response:`, response);
                             
                             if (response.status === 'success') {
-                                const progress = response.progress || 0;
-                                const message = response.message || 'Processing...';
+                                totalRecords = response.total;
+                                processedRecords += response.processed;
+                                
+                                const progress = Math.min(100, Math.round((processedRecords / totalRecords) * 100));
                                 
                                 // Update progress bar
                                 $('#sync-progress-bar').css('width', progress + '%').text(progress + '%');
-                                $('#sync-progress-text').text(message);
+                                $('#sync-progress-text').text(`Processing... (${processedRecords}/${totalRecords})`);
                                 
                                 // Continue if there's more
                                 if (response.has_more) {
-                                    processBatch(response.offset);
+                                    // Calculate next offset for this worker
+                                    const nextOffset = offset + (batchSize * maxWorkers);
+                                    processBatch(workerId, nextOffset);
                                 } else {
-                                    // Completed
-                                    Swal.fire({
-                                        icon: 'success',
-                                        title: 'Selesai!',
-                                        text: 'Semua data berhasil di-refresh!',
-                                        timer: 2000,
-                                        showConfirmButton: false
-                                    }).then(() => {
-                                        location.reload();
-                                    });
+                                    activeWorkers--;
+                                    
+                                    // All workers done?
+                                    if (activeWorkers === 0) {
+                                        Swal.fire({
+                                            icon: 'success',
+                                            title: 'Selesai!',
+                                            text: `${processedRecords} data berhasil di-refresh!`,
+                                            timer: 2000,
+                                            showConfirmButton: false
+                                        }).then(() => {
+                                            location.reload();
+                                        });
+                                    }
                                 }
                             } else {
+                                activeWorkers--;
                                 Swal.fire({
                                     icon: 'error',
                                     title: 'Gagal',
@@ -466,8 +483,23 @@
                             }
                         },
                         error: function(jqXHR, textStatus, errorThrown) {
-                            console.error("AJAX Failed", textStatus, errorThrown);
-                        },
+                            console.error(`Worker ${workerId} failed:`, textStatus, errorThrown);
+                            activeWorkers--;
+                            
+                            if (activeWorkers === 0) {
+                                Swal.fire("Error", "Gagal terhubung ke server. Coba lagi.", "error");
+                            }
+                        }
+                    });
+                }
+                
+                // Start parallel workers
+                for (let i = 0; i < maxWorkers; i++) {
+                    processBatch(i + 1, i * batchSize);
+                }
+            }
+        });
+    });
                         error: function(jqXHR, textStatus, errorThrown) {
                             console.error("AJAX Failed", textStatus, errorThrown);
                             Swal.fire("Error", "Gagal terhubung ke server. Coba lagi.", "error");
