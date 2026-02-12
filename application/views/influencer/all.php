@@ -501,18 +501,6 @@
         });
     });
 
-
-
-
-    function get_id() {
-                processBatch(0);
-            }
-        });
-    });
-
-
-
-
     function get_id() {
         list_id_v2 = '';
         var selectedValues = [];
