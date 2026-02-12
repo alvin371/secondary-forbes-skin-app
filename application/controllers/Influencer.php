@@ -1014,13 +1014,13 @@ class Influencer extends BaseController
         $total_result = $this->mymodel->selectWithQuery($total_query);
         $total = intval($total_result[0]['total']);
         
-        // Get batch with smart filter
+        // Get batch with smart filter (MySQL compatible - NULL values sort first by default)
         $list = $this->mymodel->selectWithQuery("
             SELECT * FROM influencer 
             WHERE avg_interaksi_2 = 0 
             AND status = 'Aktif' 
             AND (sync_at IS NULL OR sync_at < '$one_hour_ago')
-            ORDER BY sync_at ASC NULLS FIRST
+            ORDER BY ISNULL(sync_at) DESC, sync_at ASC
             LIMIT $batch_size OFFSET $offset
         ");
 
