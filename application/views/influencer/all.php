@@ -500,14 +500,11 @@
             }
         });
     });
-                        error: function(jqXHR, textStatus, errorThrown) {
-                            console.error("AJAX Failed", textStatus, errorThrown);
-                            Swal.fire("Error", "Gagal terhubung ke server. Coba lagi.", "error");
-                        }
-                    });
-                }
-                
-                // Start batch processing
+
+
+
+
+    function get_id() {
                 processBatch(0);
             }
         });
