@@ -1754,7 +1754,28 @@ class Endorse extends BaseController
 
         $v = $query[0];
         $detail = $query[0];
+
+        // Instagram: Use async queue (no immediate sync)
+        if ($v['platform'] === 'Instagram') {
+            // For Instagram, we can't sync immediately - it needs to go through ScrapingBot queue
+            // Just update the timestamp and show message
+            $dt = [
+                'sync_at' => date("Y-m-d H:i:s"),
+                'updated_at' => date("Y-m-d H:i:s")
+            ];
+            $this->db->update('endorse', $dt, ['id' => $id]);
+            
+            echo $this->template->alert_warning("Instagram sync memerlukan waktu. Data akan diperbarui melalui sistem antrian dalam beberapa menit.");
+            die;
+        }
+
+        // TikTok: Synchronous via RapidAPI
         $response = $this->template->get_social_media($v['platform'], $v['link_upload']);
+
+        if ($response['status'] == false) {
+            echo $this->template->alert_danger($response['msg']);
+            die;
+        }
 
         $id_endorse = $v['id'];
         $today = DATE("Y-m-d");
@@ -1763,9 +1784,7 @@ class Endorse extends BaseController
         WHERE id_endorse = '$id_endorse' AND date < '$today' AND views_after > 0 ORDER BY date DESC LIMIT 1");
         $query_yesterday = $query_yesterday[0];
 
-
         $dt = array();
-
         $dt['status'] = strval($v['status']);
         $dt['status_campaign'] = strval($v['status_campaign']);
         $dt['sync_at'] = DATE("Y-m-d H:i:s");
@@ -1790,7 +1809,6 @@ class Endorse extends BaseController
         $dt['comment'] = $response['data']['comment'];
         $dt['share_save'] = doubleval($response['data']['share']) + doubleval($response['data']['collect']);
         $dt['views'] = $response['data']['view'];
-
 
         if ($dt['views'] >= 50000) {
             $id_influencer = $detail['influencer'];
@@ -1823,7 +1841,6 @@ class Endorse extends BaseController
             unset($dt['sync_at']);
 
             $today = DATE("Y-m-d");
-            // $today = "2024-06-18";
             $yesterday = DATE('Y-m-d', strtotime($today . " -1 days"));
 
             $id_endorse = $v['id'];
@@ -1832,12 +1849,10 @@ class Endorse extends BaseController
                 WHERE id_endorse = '$id_endorse' AND date = '$today' ");
             $query = $query[0];
 
-
             $dt['id_endorse'] = strval($v['id']);
             $dt['id_campaign'] = strval($v['id_campaign']);
             $dt['influencer'] = strval($v['influencer']);
             $dt['date'] = $today;
-
 
             $dtt = array();
             $dtt['likes'] = doubleval($dt['likes']);
@@ -1847,7 +1862,6 @@ class Endorse extends BaseController
             $dtt['cpm'] = doubleval($dt['cpm']);
 
             $dt['total_cost'] = doubleval($v['total_cost']);
-
             $dt['link_upload'] = strval($v['link_upload']);
             $dt['platform'] = strval($v['platform']);
 
@@ -1908,12 +1922,8 @@ class Endorse extends BaseController
             $this->update_endorse_parent($id_parent);
         }
 
-        if ($response['status'] == true) {
-            $msg = 'Refresh data berhasil!';
-            echo $this->template->alert_success($msg);
-        } else {
-            echo $this->template->alert_danger($response['msg']);
-        }
+        $msg = 'Refresh data berhasil!';
+        echo $this->template->alert_success($msg);
     }
 
 
