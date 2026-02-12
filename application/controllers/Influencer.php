@@ -999,19 +999,28 @@ class Influencer extends BaseController
     {
         header('Content-Type: application/json');
         
-        // Get batch parameters
-        $batch_size = intval($_POST['batch_size'] ?? 5); // Process 5 at a time
+        // Get batch parameters - increased to 10
+        $batch_size = intval($_POST['batch_size'] ?? 10);
         $offset = intval($_POST['offset'] ?? 0);
         
-        // Get total count
-        $total_query = "SELECT COUNT(*) as total FROM influencer WHERE avg_interaksi_2 = 0 AND status = 'Aktif'";
+        // Smart filtering: Skip recently synced (within last hour)
+        $one_hour_ago = date('Y-m-d H:i:s', strtotime('-1 hour'));
+        
+        // Get total count with smart filter
+        $total_query = "SELECT COUNT(*) as total FROM influencer 
+                        WHERE avg_interaksi_2 = 0 
+                        AND status = 'Aktif' 
+                        AND (sync_at IS NULL OR sync_at < '$one_hour_ago')";
         $total_result = $this->mymodel->selectWithQuery($total_query);
         $total = intval($total_result[0]['total']);
         
-        // Get batch
+        // Get batch with smart filter
         $list = $this->mymodel->selectWithQuery("
             SELECT * FROM influencer 
-            WHERE avg_interaksi_2 = 0 AND status = 'Aktif' 
+            WHERE avg_interaksi_2 = 0 
+            AND status = 'Aktif' 
+            AND (sync_at IS NULL OR sync_at < '$one_hour_ago')
+            ORDER BY sync_at ASC NULLS FIRST
             LIMIT $batch_size OFFSET $offset
         ");
 
