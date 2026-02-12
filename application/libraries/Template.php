@@ -1035,4 +1035,279 @@ class Template
             return number_format($number, 2, '.', '');
         }
     }
+
+    /**
+     * Insert a scraping queue item for async processing
+     *
+     * @param string $entityType  Your entity type (e.g. 'influencer', 'endorse')
+     * @param int    $entityId    The entity record ID
+     * @param string $type        Platform type ('Tiktok' or 'Instagram')
+     * @param string $url         Profile URL
+     * @param int    $priority    Priority level (higher = processed first)
+     * @return array ['status' => bool, 'msg' => string]
+     */
+    function enqueue_scrape($entityType, $entityId, $type, $url, $priority = 5)
+    {
+        $CI =& get_instance();
+        $CI->load->library('scrapingbot');
+
+        $params = $CI->scrapingbot->buildScrapeParams($type, $url);
+        if (!$params) {
+            return ['status' => false, 'msg' => 'Invalid platform or URL'];
+        }
+
+        // Deduplicate: skip if already in queue (pending/submitted)
+        $existing = $CI->db->select('id')
+            ->where('entity_type', $entityType)
+            ->where('entity_id', $entityId)
+            ->where_in('status', ['pending', 'submitted'])
+            ->get('scraping_queue')
+            ->num_rows();
+
+        if ($existing > 0) {
+            return ['status' => true, 'msg' => 'Already in queue'];
+        }
+
+        $CI->db->insert('scraping_queue', [
+            'entity_type' => $entityType,
+            'entity_id'   => $entityId,
+            'scraper'     => $params['scraper'],
+            'scrape_url'  => json_encode($params['params']),
+            'status'      => 'pending',
+            'priority'    => $priority,
+            'created_at'  => date('Y-m-d H:i:s'),
+        ]);
+
+        return ['status' => true, 'msg' => 'Added to queue'];
+    }
+
+    /**
+     * Parse ScrapingBot tiktokProfile response
+     *
+     * @param array $data  Raw response data (first element of the array returned by pollResult)
+     * @return array ['profile' => [...], 'posts' => [...]]
+     */
+    function parseTiktokProfileResponse($data)
+    {
+        $result = [
+            'profile' => [
+                'account_id'  => '',
+                'follower'    => 0,
+                'media_count' => 0,
+                'img'         => '',
+                'full_name'   => '',
+            ],
+            'posts' => [],
+        ];
+
+        if (empty($data)) {
+            return $result;
+        }
+
+        // ScrapingBot may return a flat array of video objects with embedded profile info
+        // Save the full array as posts BEFORE unwrapping to a single item
+        $allPosts = [];
+        if (isset($data[0]) && is_array($data[0])) {
+            $allPosts = $data;
+
+            $profileItem = null;
+            foreach ($data as $item) {
+                if (is_array($item) && ($item['type'] ?? null) === 'profile') {
+                    $profileItem = $item;
+                    break;
+                }
+            }
+            $data = $profileItem ?? $data[0];
+        }
+
+        // Profile info - handles multiple possible field names from ScrapingBot
+        $result['profile']['account_id']  = strval($data['sec_uid'] ?? ($data['id'] ?? ''));
+        $result['profile']['follower']    = intval($data['follower_count'] ?? ($data['followers'] ?? 0));
+        $result['profile']['media_count'] = intval($data['videos_count'] ?? ($data['video_count'] ?? 0));
+        $result['profile']['img']         = strval($data['avatar'] ?? ($data['avatar_thumb'] ?? ''));
+        $result['profile']['full_name']   = strval($data['nickname'] ?? ($data['unique_id'] ?? ''));
+
+        // Video stats — use saved $allPosts as fallback for flat array format
+        $videos = $data['top_videos'] ?? ($data['videos'] ?? ($allPosts ?: []));
+        $videos = array_slice($videos, 0, 10);
+
+        foreach ($videos as $k => $v) {
+            $result['posts'][$k] = [
+                'like'    => intval($v['diggCount'] ?? ($v['likes'] ?? 0)),
+                'share'   => intval($v['shareCount'] ?? ($v['shares'] ?? 0)),
+                'comment' => intval($v['commentCount'] ?? ($v['comments'] ?? 0)),
+                'collect' => intval($v['collectCount'] ?? ($v['saves'] ?? 0)),
+                'view'    => intval($v['playCount'] ?? ($v['views'] ?? 0)),
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Parse ScrapingBot instagramProfile response
+     *
+     * GOTCHA: ScrapingBot returns a FLAT ARRAY of post objects with embedded profile info,
+     * NOT a profile object with a nested posts array. Each post object contains fields like
+     * `author_id`, `profile_name`, `followers`, `likes`, `comments`, etc.
+     *
+     * @param array $data  Raw response data
+     * @return array ['profile' => [...], 'posts' => [...]]
+     */
+    function parseInstagramProfileResponse($data)
+    {
+        $result = [
+            'profile' => [
+                'account_id'  => '',
+                'follower'    => 0,
+                'media_count' => 0,
+                'img'         => '',
+                'full_name'   => '',
+            ],
+            'posts' => [],
+        ];
+
+        if (empty($data)) {
+            return $result;
+        }
+
+        // ScrapingBot returns a flat array of post objects with embedded profile info
+        // Save the full array as posts BEFORE unwrapping to a single item
+        $allPosts = [];
+        if (isset($data[0]) && is_array($data[0])) {
+            $allPosts = $data;
+
+            $profileItem = null;
+            foreach ($data as $item) {
+                if (is_array($item) && ($item['type'] ?? null) === 'profile') {
+                    $profileItem = $item;
+                    break;
+                }
+            }
+            $data = $profileItem ?? $data[0];
+        }
+
+        // Parse profile info — check ScrapingBot field names first, then legacy names
+        $result['profile']['account_id']  = strval($data['author_id'] ?? ($data['id'] ?? ($data['pk'] ?? '')));
+        $result['profile']['follower']    = intval($data['follower_count'] ?? ($data['followers'] ?? 0));
+        $result['profile']['media_count'] = intval($data['posts_count'] ?? ($data['post_count'] ?? ($data['media_count'] ?? 0)));
+        $result['profile']['img']         = strval($data['profile_image_link'] ?? ($data['profile_picture'] ?? ($data['profile_pic_url'] ?? '')));
+        $result['profile']['full_name']   = strval($data['profile_name'] ?? ($data['full_name'] ?? ($data['username'] ?? '')));
+
+        // Post stats — use saved $allPosts as fallback for flat array format
+        $posts = $data['posts'] ?? ($data['edge_owner_to_timeline_media']['edges'] ?? ($allPosts ?: []));
+        $posts = array_slice($posts, 0, 12);
+
+        foreach ($posts as $k => $v) {
+            $node = $v['node'] ?? $v; // Handle nested edge format
+
+            $result['posts'][$k] = [
+                'like'    => intval($node['like_count'] ?? ($node['edge_media_preview_like']['count'] ?? ($node['likes'] ?? 0))),
+                'share'   => 0, // Instagram doesn't expose share count
+                'comment' => intval($node['comment_count'] ?? ($node['edge_media_to_comment']['count'] ?? ($node['comments'] ?? 0))),
+                'collect' => 0, // Instagram doesn't expose save count publicly
+                'view'    => intval($node['video_view_count'] ?? ($node['views'] ?? 0)),
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
+     * Process a completed scraping queue result and update the entity
+     *
+     * CUSTOMIZE: Change table names, column names, and metrics to match your app.
+     *
+     * @param array $queueItem  The scraping_queue row
+     * @param array $resultData Parsed ScrapingBot response data
+     * @return bool
+     */
+    function process_scrape_result($queueItem, $resultData)
+    {
+        $CI =& get_instance();
+
+        $entityType = $queueItem['entity_type'];
+        $entityId = $queueItem['entity_id'];
+        $scraper = $queueItem['scraper'];
+
+        // Parse the response based on scraper type
+        if ($scraper === 'tiktokProfile') {
+            $parsed = $this->parseTiktokProfileResponse($resultData);
+        } elseif ($scraper === 'instagramProfile') {
+            $parsed = $this->parseInstagramProfileResponse($resultData);
+        } else {
+            return false;
+        }
+
+        // Map entity_type to your actual table name
+        $table = $entityType; // e.g. 'influencer', 'kol', etc.
+
+        // Guard: don't overwrite good data with empty/zero results
+        if (empty($parsed['profile']['account_id']) && $parsed['profile']['follower'] <= 0) {
+            log_message('error', "ScrapingBot: Empty parse result for {$entityType}#{$entityId}, skipping update");
+            return false;
+        }
+
+        // Update profile data
+        $profileUpdate = [
+            'account_id'  => $parsed['profile']['account_id'],
+            'img'         => $parsed['profile']['img'],
+            'follower'    => $parsed['profile']['follower'],
+            'media_count' => $parsed['profile']['media_count'],
+            'updated_at'  => date('Y-m-d H:i:s'),
+            'updated_by'  => '1', // system user
+        ];
+
+        if (!empty($parsed['profile']['full_name'])) {
+            $profileUpdate['full_name'] = $parsed['profile']['full_name'];
+        }
+
+        $CI->db->update($table, $profileUpdate, ['id' => $entityId]);
+
+        // Calculate engagement metrics from posts
+        if (!empty($parsed['posts'])) {
+            $like = $comment = $collect = $share = $view = 0;
+            $i = 0;
+
+            foreach ($parsed['posts'] as $post) {
+                $like    += $post['like'];
+                $comment += $post['comment'];
+                $collect += $post['collect'];
+                $share   += $post['share'];
+                $view    += $post['view'];
+                $i++;
+                if ($i >= 10) break;
+            }
+
+            $avg_view = $i ? $view / $i : 0;
+            $avg_interaksi = $i ? ($like + $comment + $collect + $share) / $i : 0;
+            $er = ($avg_view > 0) ? ($avg_interaksi / $avg_view * 100) : 0;
+
+            // If you have a ratecard field, calculate CPM
+            $record = $CI->db->select('ratecard')->where('id', $entityId)->get($table)->row_array();
+            $ratecard = floatval($record['ratecard'] ?? 0);
+            $cpm = ($ratecard > 0 && $avg_view > 0) ? ($ratecard / $avg_view * 1000) : 0;
+
+            // Update metrics
+            $metricsUpdate = [
+                'sync_at'          => date('Y-m-d H:i:s'),
+                'updated_at'       => date('Y-m-d H:i:s'),
+                'updated_by'       => '1',
+                'frequency_2'      => $i,
+                'view_2'           => $view,
+                'like_2'           => $like,
+                'collect_2'        => $collect,
+                'share_2'          => $share,
+                'comment_2'        => $comment,
+                'avg_view_2'       => $avg_view,
+                'avg_interaksi_2'  => $avg_interaksi,
+                'er'               => $er,
+                'cpm_2'            => $cpm,
+            ];
+
+            $CI->db->update($table, $metricsUpdate, ['id' => $entityId]);
+        }
+
+        return true;
+    }
 }
