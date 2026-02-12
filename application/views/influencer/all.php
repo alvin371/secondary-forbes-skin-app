@@ -392,112 +392,180 @@
 <script>
     var list_id_v2 = '';
     
+    const syncConfig = {
+        batchSize: 2,
+        maxRetries: 2,
+        retryDelayMs: 2000,
+        interBatchDelayMs: 250,
+        requestTimeoutMs: 70000
+    };
+    let syncRunning = false;
+    let totalTarget = 0;
+    let errorCount = 0;
+
+    function setRefreshButtonState(isLoading, label) {
+        const button = $('#btn-refresh');
+        button.toggleClass('disabled', isLoading);
+        button.css('pointer-events', isLoading ? 'none' : 'auto');
+        button.find('.btn-text').text(label || 'Refresh Data Baru');
+        button.find('.spinner-border').toggleClass('d-none', !isLoading);
+    }
+
+    function parseAjaxError(jqXHR, textStatus, errorThrown) {
+        if (jqXHR && jqXHR.responseJSON && jqXHR.responseJSON.message) {
+            return jqXHR.responseJSON.message;
+        }
+        if (jqXHR && jqXHR.status === 504) {
+            return 'Gateway timeout (504). Batch dihentikan untuk mencegah proses gagal berulang.';
+        }
+        if (textStatus === 'timeout') {
+            return 'Request timeout. Koneksi ke layanan external sedang lambat.';
+        }
+        return errorThrown || 'Terjadi kesalahan koneksi ke server.';
+    }
+
+    function showProgressModal() {
+        Swal.fire({
+            title: 'Processing...',
+            html: '<div style="margin:20px 0;"><div class="progress" style="height:25px;"><div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width:0%;" id="sync-progress-bar">0%</div></div></div><p id="sync-progress-text">Initializing...</p><small id="sync-speed-text" style="color:#666;">Memproses ' + syncConfig.batchSize + ' data per batch (aman dari timeout).</small>',
+            allowOutsideClick: false,
+            allowEscapeKey: false,
+            showConfirmButton: false,
+            didOpen: () => Swal.showLoading()
+        });
+    }
+
+    function runExternalSyncBatch(retryAttempt = 0) {
+        $.ajax({
+            url: '<?= base_url() ?>influencer/sync_external_process',
+            type: 'POST',
+            dataType: 'json',
+            timeout: syncConfig.requestTimeoutMs,
+            data: {
+                batch_size: syncConfig.batchSize,
+                total_target: totalTarget
+            }
+        }).done(function(response) {
+            if (!response || response.status !== 'success') {
+                const message = (response && response.message) ? response.message : 'Response tidak valid dari server.';
+                Swal.fire('Gagal', message, 'error');
+                setRefreshButtonState(false, 'Refresh Data Baru');
+                syncRunning = false;
+                return;
+            }
+
+            totalTarget = parseInt(response.total_target || totalTarget || 0, 10);
+            const pendingAfter = parseInt(response.pending_after || 0, 10);
+            const processedTotal = totalTarget > 0 ? Math.max(0, totalTarget - pendingAfter) : 0;
+            const progress = Math.min(100, parseInt(response.progress || 0, 10));
+
+            $('#sync-progress-bar').css('width', progress + '%').text(progress + '%');
+            $('#sync-progress-text').text('Processing... (' + processedTotal + '/' + totalTarget + ')');
+
+            if (Array.isArray(response.errors) && response.errors.length > 0) {
+                errorCount += response.errors.length;
+                console.warn('Sync batch errors:', response.errors);
+            }
+
+            if (response.has_more) {
+                setTimeout(function() {
+                    runExternalSyncBatch(0);
+                }, syncConfig.interBatchDelayMs);
+                return;
+            }
+
+            syncRunning = false;
+            setRefreshButtonState(false, 'Refresh Data Baru');
+            const finalMessage = errorCount > 0
+                ? (totalTarget + ' data diproses dengan ' + errorCount + ' error. Cek console untuk detail.')
+                : (totalTarget + ' data berhasil di-refresh.');
+
+            Swal.fire({
+                icon: errorCount > 0 ? 'warning' : 'success',
+                title: 'Selesai!',
+                text: finalMessage,
+                timer: 2500,
+                showConfirmButton: false
+            }).then(() => {
+                location.reload();
+            });
+        }).fail(function(jqXHR, textStatus, errorThrown) {
+            if (retryAttempt < syncConfig.maxRetries) {
+                const nextRetry = retryAttempt + 1;
+                $('#sync-progress-text').text('Koneksi lambat, retry ' + nextRetry + '/' + syncConfig.maxRetries + '...');
+                setTimeout(function() {
+                    runExternalSyncBatch(nextRetry);
+                }, syncConfig.retryDelayMs);
+                return;
+            }
+
+            syncRunning = false;
+            setRefreshButtonState(false, 'Refresh Data Baru');
+            Swal.fire('Error', parseAjaxError(jqXHR, textStatus, errorThrown), 'error');
+        });
+    }
+
     $('#btn-refresh').on('click', function(e) {
         e.preventDefault();
-    
-        Swal.fire({
-        title: 'Konfirmasi',
-        text: 'Apakah Anda yakin ingin me-refresh data influencer?',
-        icon: 'warning',
-        showCancelButton: true,
-        confirmButtonText: 'Ya, Refresh Data',
-        cancelButtonText: 'Batal',
-        customClass: {
-            confirmButton: 'btn btn-primary me-2',  
-            cancelButton: 'btn btn-secondary'  
-        },
-        buttonsStyling: false 
-    }).then((result) => {
-            if (result.isConfirmed) {
-                // Show progress modal
-                Swal.fire({
-                    title: 'Processing...',
-                    html: '<div style="margin: 20px 0;"><div class="progress" style="height: 25px;"><div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" id="sync-progress-bar">0%</div></div></div><p id="sync-progress-text">Initializing...</p><small id="sync-speed-text" style="color: #666;">Processing 20 records at once...</small>',
-                    allowOutsideClick: false,
-                    allowEscapeKey: false,
-                    showConfirmButton: false,
-                    didOpen: () => {
-                        Swal.showLoading();
-                    }
-                });
-                
-                let totalRecords = 0;
-                let processedRecords = 0;
-                let activeWorkers = 0;
-                const maxWorkers = 2; // Parallel workers
-                const batchSize = 10; // Records per batch
-                
-                // Parallel batch processor
-                function processBatch(workerId, offset) {
-                    activeWorkers++;
-                    
-                    $.ajax({
-                        url: '<?= base_url() ?>influencer/sync_external_process',
-                        type: 'POST',
-                        dataType: 'json',
-                        data: {
-                            batch_size: batchSize,
-                            offset: offset
-                        },
-                        success: function(response) {
-                            console.log(`Worker ${workerId} response:`, response);
-                            
-                            if (response.status === 'success') {
-                                totalRecords = response.total;
-                                processedRecords += response.processed;
-                                
-                                const progress = Math.min(100, Math.round((processedRecords / totalRecords) * 100));
-                                
-                                // Update progress bar
-                                $('#sync-progress-bar').css('width', progress + '%').text(progress + '%');
-                                $('#sync-progress-text').text(`Processing... (${processedRecords}/${totalRecords})`);
-                                
-                                // Continue if there's more
-                                if (response.has_more) {
-                                    // Calculate next offset for this worker
-                                    const nextOffset = offset + (batchSize * maxWorkers);
-                                    processBatch(workerId, nextOffset);
-                                } else {
-                                    activeWorkers--;
-                                    
-                                    // All workers done?
-                                    if (activeWorkers === 0) {
-                                        Swal.fire({
-                                            icon: 'success',
-                                            title: 'Selesai!',
-                                            text: `${processedRecords} data berhasil di-refresh!`,
-                                            timer: 2000,
-                                            showConfirmButton: false
-                                        }).then(() => {
-                                            location.reload();
-                                        });
-                                    }
-                                }
-                            } else {
-                                activeWorkers--;
-                                Swal.fire({
-                                    icon: 'error',
-                                    title: 'Gagal',
-                                    text: response.message || "Terjadi kesalahan"
-                                });
-                            }
-                        },
-                        error: function(jqXHR, textStatus, errorThrown) {
-                            console.error(`Worker ${workerId} failed:`, textStatus, errorThrown);
-                            activeWorkers--;
-                            
-                            if (activeWorkers === 0) {
-                                Swal.fire("Error", "Gagal terhubung ke server. Coba lagi.", "error");
-                            }
-                        }
-                    });
-                }
-                
-                // Start parallel workers
-                for (let i = 0; i < maxWorkers; i++) {
-                    processBatch(i + 1, i * batchSize);
-                }
+        if (syncRunning) {
+            return;
+        }
+
+        setRefreshButtonState(true, 'Memeriksa data...');
+        $.ajax({
+            url: '<?= base_url() ?>influencer/sync_external_status',
+            type: 'GET',
+            dataType: 'json',
+            timeout: 20000
+        }).done(function(statusResponse) {
+            setRefreshButtonState(false, 'Refresh Data Baru');
+
+            if (!statusResponse || statusResponse.status !== 'success') {
+                Swal.fire('Error', 'Gagal membaca status sinkronisasi.', 'error');
+                return;
             }
+
+            const pendingToday = parseInt(statusResponse.pending_today || 0, 10);
+            const syncedToday = parseInt(statusResponse.synced_today || 0, 10);
+            const today = statusResponse.today || '';
+
+            if (pendingToday <= 0) {
+                Swal.fire({
+                    icon: 'info',
+                    title: 'Tidak Perlu Refresh',
+                    text: 'Semua data baru sudah diupdate hari ini (' + today + ').'
+                });
+                return;
+            }
+
+            Swal.fire({
+                title: 'Konfirmasi',
+                html: pendingToday + ' data baru belum diupdate hari ini.<br>' +
+                    syncedToday + ' data sudah update hari ini (' + today + ').<br><br>Lanjut refresh sekarang?',
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonText: 'Ya, Refresh Data',
+                cancelButtonText: 'Batal',
+                customClass: {
+                    confirmButton: 'btn btn-primary me-2',
+                    cancelButton: 'btn btn-secondary'
+                },
+                buttonsStyling: false
+            }).then((result) => {
+                if (!result.isConfirmed) {
+                    return;
+                }
+
+                syncRunning = true;
+                totalTarget = pendingToday;
+                errorCount = 0;
+                setRefreshButtonState(true, 'Menyinkronkan...');
+                showProgressModal();
+                runExternalSyncBatch(0);
+            });
+        }).fail(function(jqXHR, textStatus, errorThrown) {
+            setRefreshButtonState(false, 'Refresh Data Baru');
+            Swal.fire('Error', parseAjaxError(jqXHR, textStatus, errorThrown), 'error');
         });
     });
 
