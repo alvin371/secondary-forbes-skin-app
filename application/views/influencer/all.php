@@ -409,7 +409,17 @@
         buttonsStyling: false 
     }).then((result) => {
             if (result.isConfirmed) {
-                $('#page-loading').fadeIn(200);
+                // Show progress modal
+                Swal.fire({
+                    title: 'Processing...',
+                    html: '<div style="margin: 20px 0;"><div class="progress" style="height: 25px;"><div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%;" id="sync-progress-bar">0%</div></div></div><p id="sync-progress-text">Initializing...</p>',
+                    allowOutsideClick: false,
+                    allowEscapeKey: false,
+                    showConfirmButton: false,
+                    didOpen: () => {
+                        Swal.showLoading();
+                    }
+                });
                 
                 // Batch processing function
                 function processBatch(offset = 0) {
@@ -425,53 +435,41 @@
                             console.log("Batch response", response);
                             
                             if (response.status === 'success') {
-                                // Update progress
                                 const progress = response.progress || 0;
                                 const message = response.message || 'Processing...';
                                 
-                                // Show progress toast
-                                $.toast({
-                                    heading: "Progress",
-                                    text: message + " (" + progress + "%)",
-                                    showHideTransition: "fade",
-                                    icon: "info",
-                                    position: "top-right",
-                                    loaderBg: "#5bc0de",
-                                    hideAfter: 1000
-                                });
+                                // Update progress bar
+                                $('#sync-progress-bar').css('width', progress + '%').text(progress + '%');
+                                $('#sync-progress-text').text(message);
                                 
                                 // Continue if there's more
                                 if (response.has_more) {
                                     processBatch(response.offset);
                                 } else {
                                     // Completed
-                                    $('#page-loading').fadeOut(200);
-                                    $.toast({
-                                        heading: "Selesai",
-                                        text: "Semua data berhasil di-refresh!",
-                                        showHideTransition: "slide",
-                                        icon: "success",
-                                        position: "top-right",
-                                        loaderBg: "#def7f0",
-                                        hideAfter: 2500
-                                    });
-                                    setTimeout(function() {
+                                    Swal.fire({
+                                        icon: 'success',
+                                        title: 'Selesai!',
+                                        text: 'Semua data berhasil di-refresh!',
+                                        timer: 2000,
+                                        showConfirmButton: false
+                                    }).then(() => {
                                         location.reload();
-                                    }, 2600);
+                                    });
                                 }
                             } else {
-                                $('#page-loading').fadeOut(200);
-                                $.toast({
-                                    heading: "Gagal",
-                                    text: response.message || "Terjadi kesalahan",
-                                    icon: "error",
-                                    position: "top-right"
+                                Swal.fire({
+                                    icon: 'error',
+                                    title: 'Gagal',
+                                    text: response.message || "Terjadi kesalahan"
                                 });
                             }
                         },
                         error: function(jqXHR, textStatus, errorThrown) {
                             console.error("AJAX Failed", textStatus, errorThrown);
-                            $('#page-loading').fadeOut(200);
+                        },
+                        error: function(jqXHR, textStatus, errorThrown) {
+                            console.error("AJAX Failed", textStatus, errorThrown);
                             Swal.fire("Error", "Gagal terhubung ke server. Coba lagi.", "error");
                         }
                     });
