@@ -672,102 +672,101 @@ class Template
         $response["status"] = true;
         $response["msg"] = "";
         $response["data"] = array();
+        
         if ($type == "Tiktok") {
-            if ($url) {
-                $curl = curl_init();
-                curl_setopt_array($curl, array(
-                    CURLOPT_URL => $url,
-                    CURLOPT_RETURNTRANSFER => true,
-                    CURLOPT_ENCODING => '',
-                    CURLOPT_MAXREDIRS => 10,
-                    CURLOPT_TIMEOUT => 0,
-                    CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:100.0) Gecko/20100101 Firefox/100.0',
-                    CURLOPT_FOLLOWLOCATION => true,
-                    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                    CURLOPT_CUSTOMREQUEST => 'GET',
-                    CURLOPT_HTTPHEADER => array(
-                        'Cookie: tt_chain_token=+O8Mw9RH4nKrX/ACdOBhXw==; tt_csrf_token=27TtpaB8-Wftkj0rFR_w6LdtcAp4tdDCFfBY; ttwid=1%7CdJI7LAdiTNKwSISqHad9wDTJ6G_70WU_PGro2isx-ac%7C1705385087%7C518efef116162148489d7f25fa3c7b06633a23c824590f04ea0226d5c2b6f092'
-                    ),
-                ));
-
-                $responsee = curl_exec($curl);
-
-                curl_close($curl);
-
-                $html = "$responsee";
-
-                $pattern = '/<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application\/json">(.*?)<\/script>/s';
-                preg_match($pattern, $html, $matches);
-                if (isset($matches[1])) {
-                    $jsonContent = $matches[1];
-                    $jsonData = json_decode($jsonContent, true)['__DEFAULT_SCOPE__']['webapp.video-detail']['itemInfo']['itemStruct'];
-                    $response["status"] = true;
-                    $response["msg"] = "";
-                    if (intval($jsonData['stats']['playCount']) > 0) {
-                        $response["data"]["like"] = intval($jsonData['stats']['diggCount']);
-                        $response["data"]["share"] = intval($jsonData['stats']['shareCount']);
-                        $response["data"]["comment"] = intval($jsonData['stats']['commentCount']);
-                        $response["data"]["collect"] = intval($jsonData['stats']['collectCount']);
-                        $response["data"]["view"] = intval($jsonData['stats']['playCount']);
-                        $response['data']['created_at'] = DATE("Y-m-d", $jsonData['createTime']);
-                    } else {
-                        $parts = explode('/photo/', $url);
-                        $parts = explode('?', end($parts));
-                        $content_id = $parts[0];
-
-                        $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-scraper-api4.p.rapidapi.com');
-                        $rapidapi_key = env('RAPIDAPI_KEY', '');
-
-                        $curl = curl_init();
-
-                        curl_setopt_array($curl, [
-                            CURLOPT_URL => "https://{$rapidapi_host}/api/v1/post/info?video_id=$content_id",
-                            CURLOPT_RETURNTRANSFER => true,
-                            CURLOPT_ENCODING => "",
-                            CURLOPT_MAXREDIRS => 10,
-                            CURLOPT_TIMEOUT => 30,
-                            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                            CURLOPT_CUSTOMREQUEST => "GET",
-                            CURLOPT_HTTPHEADER => [
-                                "X-RapidAPI-Host: {$rapidapi_host}",
-                                "X-RapidAPI-Key: {$rapidapi_key}"
-                            ],
-                        ]);
-
-                        $responsee = curl_exec($curl);
-
-                        curl_close($curl);
-
-                        $responsee = json_decode($responsee, true);
-                        
-                        $jsonData = $responsee['data']['stats'];
-                        if (intval($jsonData['playCount']) > 0) {
-                            $response["data"]["like"] = intval($jsonData['diggCount']);
-                            $response["data"]["share"] = intval($jsonData['shareCount']);
-                            $response["data"]["comment"] = intval($jsonData['commentCount']);
-                            $response["data"]["collect"] = intval($jsonData['collectCount']);
-                            $response["data"]["view"] = intval($jsonData['playCount']);
-                            $response["data"]["created_at"] = date("Y-m-d", $responsee['data']['createTime']);
-                        } else {
-                            $response["status"] = false;
-                            $response["msg"] = "Response tiktok " . $content_id . " tidak ditemukan";
-                            $response["data"] = array();
-                        }
-                    }
-                } else {
-                    $response["status"] = false;
-                    $response["msg"] = "Response tiktok " . $url . " tidak ditemukan";
-                    $response["data"] = array();
-                }
-            } else {
-                $response["status"] = false;
-                $response["msg"] = "URL tidak ditemukan";
-                $response["data"] = array();
+            if (empty($url)) {
+                return [
+                    "status" => false,
+                    "msg" => "URL tidak ditemukan",
+                    "data" => []
+                ];
             }
+
+            // Extract video ID from URL
+            $video_id = '';
+            if (preg_match('/\/video\/(\d+)/', $url, $matches)) {
+                $video_id = $matches[1];
+            } elseif (preg_match('/\/photo\/(\d+)/', $url, $matches)) {
+                $video_id = $matches[1];
+            } elseif (preg_match('/(\d{10,25})/', $url, $matches)) {
+                $video_id = $matches[1];
+            }
+
+            if (empty($video_id)) {
+                return [
+                    "status" => false,
+                    "msg" => "Video ID tidak ditemukan dari URL",
+                    "data" => []
+                ];
+            }
+
+            // Use RapidAPI tiktok-api23
+            $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-api23.p.rapidapi.com');
+            $rapidapi_key = env('RAPIDAPI_KEY', '');
+
+            $curl = curl_init();
+            curl_setopt_array($curl, [
+                CURLOPT_URL => "https://{$rapidapi_host}/api/post/detail?videoId={$video_id}",
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_ENCODING => "",
+                CURLOPT_MAXREDIRS => 10,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+                CURLOPT_CUSTOMREQUEST => "GET",
+                CURLOPT_HTTPHEADER => [
+                    "x-rapidapi-host: {$rapidapi_host}",
+                    "x-rapidapi-key: {$rapidapi_key}"
+                ],
+            ]);
+
+            $responsee = curl_exec($curl);
+            $err = curl_error($curl);
+            curl_close($curl);
+
+            if ($err) {
+                return [
+                    "status" => false,
+                    "msg" => "cURL Error: " . $err,
+                    "data" => []
+                ];
+            }
+
+            $json = json_decode($responsee, true);
+            
+            // Check status_code
+            $ok = isset($json['status_code']) ? intval($json['status_code']) === 0
+                : (isset($json['statusCode']) && intval($json['statusCode']) === 0);
+
+            if ($ok && isset($json['itemInfo']['itemStruct']['stats'])) {
+                $stats = $json['itemInfo']['itemStruct']['stats'];
+                $createTime = $json['itemInfo']['itemStruct']['createTime'] ?? time();
+
+                return [
+                    "status" => true,
+                    "msg" => "Data ditemukan",
+                    "data" => [
+                        "like" => intval($stats['diggCount'] ?? 0),
+                        "share" => intval($stats['shareCount'] ?? 0),
+                        "comment" => intval($stats['commentCount'] ?? 0),
+                        "collect" => intval($stats['collectCount'] ?? 0),
+                        "view" => intval($stats['playCount'] ?? 0),
+                        "created_at" => date("Y-m-d", $createTime)
+                    ]
+                ];
+            } else {
+                return [
+                    "status" => false,
+                    "msg" => "Data video TikTok tidak ditemukan",
+                    "data" => []
+                ];
+            }
+            
         } else if ($type == "Instagram") {
-            $response["status"] = false;
-            $response["msg"] = "Layanan belum tersedia";
-            $response["data"] = array();
+            return [
+                "status" => false,
+                "msg" => "Layanan belum tersedia",
+                "data" => []
+            ];
 
             // if ($url) {
 
