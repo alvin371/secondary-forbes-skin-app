@@ -79,6 +79,11 @@ $route['api/cronjob/influencer'] = 'Api_v2/cronjob_influencer';
 $route['api/cronjob/influencer-dummy'] = 'Api_v2/cronjob_influencer_dummy';
 $route['cronjob/update-customer'] = 'Api/cronjob_update_customer';
 
+// ScrapingBot cronjobs (Instagram async queue)
+$route['api/cronjob/scraping-submit'] = 'Api_v2/cronjob_scraping_submit';
+$route['api/cronjob/scraping-poll'] = 'Api_v2/cronjob_scraping_poll';
+$route['api/cronjob/scraping-enqueue'] = 'Api_v2/cronjob_scraping_enqueue';
+
 $route['api/webhook'] = 'Api_v2/webhook';
 $route['api/customer/summary'] = 'Api_v2/customer_summary';
 $route['cronjob/expense'] = 'Expense/generate_recurring_expense';

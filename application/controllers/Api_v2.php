@@ -5373,4 +5373,229 @@ class Api_v2 extends CI_Controller
             echo "Error saving the file.";
         }
     }
+
+    /**
+     * Cronjob A - Submit pending scrape jobs to ScrapingBot
+     * Recommended: every 5 minutes
+     * Picks up to 5 pending items per run (ordered by priority)
+     */
+    function cronjob_scraping_submit()
+    {
+        header('Content-Type: application/json; charset=utf-8');
+
+        $this->load->library('scrapingbot');
+        $this->load->model('mymodel');
+
+        // Pick pending items ordered by priority (highest first), then by age (oldest first)
+        $items = $this->mymodel->selectWithQuery("
+            SELECT * FROM scraping_queue
+            WHERE status = 'pending'
+            ORDER BY priority DESC, created_at ASC
+            LIMIT 5
+        ");
+
+        $submitted = 0;
+        $errors = [];
+
+        foreach ($items as $item) {
+            $params = json_decode($item['scrape_url'], true);
+            if (!$params) {
+                $this->db->update('scraping_queue', [
+                    'status'        => 'failed',
+                    'error_message' => 'Invalid scrape_url JSON',
+                    'completed_at'  => date('Y-m-d H:i:s'),
+                ], ['id' => $item['id']]);
+                $errors[] = "Item #{$item['id']}: invalid params";
+                continue;
+            }
+
+            $result = $this->scrapingbot->startScrape($item['scraper'], $params);
+
+            if ($result['status'] && !empty($result['responseId'])) {
+                $this->db->update('scraping_queue', [
+                    'status'       => 'submitted',
+                    'response_id'  => $result['responseId'],
+                    'submitted_at' => date('Y-m-d H:i:s'),
+                ], ['id' => $item['id']]);
+                $submitted++;
+            } else {
+                $attempts = intval($item['attempts']) + 1;
+                $newStatus = ($attempts >= intval($item['max_attempts'])) ? 'failed' : 'pending';
+
+                $this->db->update('scraping_queue', [
+                    'attempts'      => $attempts,
+                    'status'        => $newStatus,
+                    'error_message' => $result['msg'],
+                    'completed_at'  => ($newStatus === 'failed') ? date('Y-m-d H:i:s') : null,
+                ], ['id' => $item['id']]);
+                $errors[] = "Item #{$item['id']}: " . $result['msg'];
+            }
+        }
+
+        echo json_encode([
+            'status'    => true,
+            'submitted' => $submitted,
+            'total'     => count($items),
+            'errors'    => $errors,
+            'msg'       => "$submitted of " . count($items) . " items submitted to ScrapingBot",
+        ]);
+        die;
+    }
+
+    /**
+     * Cronjob B - Poll submitted scrape jobs for results
+     * Recommended: every 1 minute
+     * Checks up to 10 submitted items per run
+     */
+    function cronjob_scraping_poll()
+    {
+        header('Content-Type: application/json; charset=utf-8');
+
+        $this->load->library('scrapingbot');
+        $this->load->model('mymodel');
+
+        $items = $this->mymodel->selectWithQuery("
+            SELECT * FROM scraping_queue
+            WHERE status = 'submitted'
+            AND attempts < max_attempts
+            ORDER BY submitted_at ASC
+            LIMIT 10
+        ");
+
+        $completed = 0;
+        $pending = 0;
+        $failed = 0;
+
+        foreach ($items as $item) {
+            $result = $this->scrapingbot->pollResult($item['scraper'], $item['response_id']);
+
+            if ($result['status'] === 'success') {
+                // Store raw result and mark completed
+                $this->db->update('scraping_queue', [
+                    'status'       => 'completed',
+                    'result_data'  => json_encode($result['data']),
+                    'completed_at' => date('Y-m-d H:i:s'),
+                    'attempts'     => intval($item['attempts']) + 1,
+                ], ['id' => $item['id']]);
+
+                // Process the result and update the entity
+                $this->template->process_scrape_result($item, $result['data']);
+
+                $completed++;
+
+            } elseif ($result['status'] === 'pending') {
+                // Still processing - increment attempts
+                $this->db->update('scraping_queue', [
+                    'attempts' => intval($item['attempts']) + 1,
+                ], ['id' => $item['id']]);
+                $pending++;
+
+            } else {
+                // Error
+                $attempts = intval($item['attempts']) + 1;
+                $newStatus = ($attempts >= intval($item['max_attempts'])) ? 'failed' : 'submitted';
+
+                $this->db->update('scraping_queue', [
+                    'attempts'      => $attempts,
+                    'status'        => $newStatus,
+                    'error_message' => $result['msg'],
+                    'completed_at'  => ($newStatus === 'failed') ? date('Y-m-d H:i:s') : null,
+                ], ['id' => $item['id']]);
+                $failed++;
+            }
+        }
+
+        echo json_encode([
+            'status'    => true,
+            'completed' => $completed,
+            'pending'   => $pending,
+            'failed'    => $failed,
+            'total'     => count($items),
+            'msg'       => "Poll results: $completed completed, $pending pending, $failed failed",
+        ]);
+        die;
+    }
+
+    /**
+     * Cronjob C - Auto-enqueue entities needing sync (Instagram only)
+     * Recommended: every 30 minutes
+     * Priority tiers ensure hot/new records are processed first
+     * TikTok is excluded — handled by cronjob_tiktok_sync via RapidAPI
+     */
+    function cronjob_scraping_enqueue()
+    {
+        header('Content-Type: application/json; charset=utf-8');
+
+        $this->load->model('mymodel');
+
+        $enqueued = 0;
+        $skipped = 0;
+
+        // Tier 1 (Priority 10): Never synced - new records
+        // TikTok excluded — handled by cronjob_tiktok_sync
+        $tier1 = $this->mymodel->selectWithQuery("
+            SELECT id, type, url FROM influencer
+            WHERE status = 'Aktif' AND url != ''
+            AND type != 'Tiktok'
+            AND sync_at IS NULL
+            LIMIT 20
+        ");
+        foreach ($tier1 as $row) {
+            $result = $this->template->enqueue_scrape('influencer', $row['id'], $row['type'], $row['url'], 10);
+            if ($result['status']) $enqueued++; else $skipped++;
+        }
+
+        // Tier 2 (Priority 7): Has active campaign - every 3 days
+        $three_days_ago = date('Y-m-d', strtotime('-3 days'));
+        $tier2 = $this->mymodel->selectWithQuery("
+            SELECT DISTINCT i.id, i.type, i.url FROM influencer i
+            INNER JOIN endorse e ON e.influencer = i.id
+            INNER JOIN endorse_campaign ec ON e.id_campaign = ec.id
+            WHERE i.status = 'Aktif' AND i.url != ''
+            AND i.type != 'Tiktok'
+            AND ec.status = 'Aktif'
+            AND (DATE(i.sync_at) <= '$three_days_ago' OR i.sync_at IS NULL)
+            LIMIT 20
+        ");
+        foreach ($tier2 as $row) {
+            $result = $this->template->enqueue_scrape('influencer', $row['id'], $row['type'], $row['url'], 7);
+            if ($result['status']) $enqueued++; else $skipped++;
+        }
+
+        // Tier 3 (Priority 5): Regular - synced > 7 days ago
+        $seven_days_ago = date('Y-m-d', strtotime('-7 days'));
+        $tier3 = $this->mymodel->selectWithQuery("
+            SELECT id, type, url FROM influencer
+            WHERE status = 'Aktif' AND url != ''
+            AND type != 'Tiktok'
+            AND DATE(sync_at) <= '$seven_days_ago'
+            LIMIT 10
+        ");
+        foreach ($tier3 as $row) {
+            $result = $this->template->enqueue_scrape('influencer', $row['id'], $row['type'], $row['url'], 5);
+            if ($result['status']) $enqueued++; else $skipped++;
+        }
+
+        // Tier 4 (Priority 3): Cold - synced > 14 days ago
+        $fourteen_days_ago = date('Y-m-d', strtotime('-14 days'));
+        $tier4 = $this->mymodel->selectWithQuery("
+            SELECT id, type, url FROM influencer
+            WHERE status = 'Aktif' AND url != ''
+            AND type != 'Tiktok'
+            AND DATE(sync_at) <= '$fourteen_days_ago'
+            LIMIT 5
+        ");
+        foreach ($tier4 as $row) {
+            $result = $this->template->enqueue_scrape('influencer', $row['id'], $row['type'], $row['url'], 3);
+            if ($result['status']) $enqueued++; else $skipped++;
+        }
+
+        echo json_encode([
+            'status'   => true,
+            'enqueued' => $enqueued,
+            'skipped'  => $skipped,
+            'msg'      => "$enqueued records enqueued, $skipped skipped (already in queue or invalid)",
+        ]);
+        die;
+    }
 }
