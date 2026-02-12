@@ -319,30 +319,71 @@ class Template
 
     function getDataFromFirstEndpoint($username)
     {
-        $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-scraper-api4.p.rapidapi.com');
+        $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-api23.p.rapidapi.com');
         $rapidapi_key = env('RAPIDAPI_KEY', '');
 
-        $url = "https://{$rapidapi_host}/api/v1/user/info?unique_id=$username";
+        $url = "https://{$rapidapi_host}/api/user/info?uniqueId=$username";
         $headers = [
-            "X-RapidAPI-Host: {$rapidapi_host}",
-            "X-RapidAPI-Key: {$rapidapi_key}"
+            "x-rapidapi-host: {$rapidapi_host}",
+            "x-rapidapi-key: {$rapidapi_key}"
         ];
 
-        return $this->curlRequest($url, $headers);
+        $curl = curl_init();
+        curl_setopt_array($curl, [
+            CURLOPT_URL            => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_ENCODING       => "",
+            CURLOPT_MAXREDIRS      => 10,
+            CURLOPT_TIMEOUT        => 30,
+            CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
+            CURLOPT_CUSTOMREQUEST  => "GET",
+            CURLOPT_HTTPHEADER     => $headers,
+        ]);
+
+        $response = curl_exec($curl);
+        $err = curl_error($curl);
+        curl_close($curl);
+
+        if ($err) {
+            return ['status' => 'error', 'msg' => $err];
+        }
+
+        return json_decode($response, true);
     }
 
     function getDataFromSecondEndpoint($username)
     {
-        $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-scraper-api4.p.rapidapi.com');
+        $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-api23.p.rapidapi.com');
         $rapidapi_key = env('RAPIDAPI_KEY', '');
 
-        $url = "https://{$rapidapi_host}/api/v1/search/users?keyword=$username";
+        $keyword = urlencode($username);
+        $url = "https://{$rapidapi_host}/api/search/account?keyword=$keyword&cursor=0&search_id=0";
         $headers = [
-            "X-RapidAPI-Host: {$rapidapi_host}",
-            "X-RapidAPI-Key: {$rapidapi_key}"
+            "x-rapidapi-host: {$rapidapi_host}",
+            "x-rapidapi-key: {$rapidapi_key}"
         ];
 
-        return $this->curlRequest($url, $headers);
+        $curl = curl_init();
+        curl_setopt_array($curl, [
+            CURLOPT_URL            => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_ENCODING       => "",
+            CURLOPT_MAXREDIRS      => 10,
+            CURLOPT_TIMEOUT        => 30,
+            CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
+            CURLOPT_CUSTOMREQUEST  => "GET",
+            CURLOPT_HTTPHEADER     => $headers,
+        ]);
+
+        $response = curl_exec($curl);
+        $err = curl_error($curl);
+        curl_close($curl);
+
+        if ($err) {
+            return ['status' => 'error', 'msg' => $err];
+        }
+
+        return json_decode($response, true);
     }
 
     function get_account_id($type, $url)
@@ -429,64 +470,57 @@ class Template
         } else if ($type == "Tiktok") {
             $username = str_replace('@', '', $username);
 
+            // Try first endpoint: /api/user/info
             $resp1 = $this->getDataFromFirstEndpoint($username);
-            $isEmpty = true;
+            
+            // Check status_code (tiktok-api23 format)
+            $ok = isset($resp1['status_code']) ? intval($resp1['status_code']) === 0
+                : (isset($resp1['statusCode']) && intval($resp1['statusCode']) === 0);
 
-            if (isset($resp1['status']) && $resp1['status'] == 'Successful') {
-                if (!empty($resp1['data'][0]['uid'])) {
-                    $isEmpty = false;
-                    $visible_videos_count = $resp1['data'][0]['aweme_count'] ?? null;
-                    $follower_count = $resp1['data'][0]['follower_count'] ?? null;
-                    $uid = $resp1['data'][0]['uid'] ?? null;
-                    $avatar_urls = $resp1['data'][0]['avatar_larger']['url_list'][0] ?? null;
-                    $nickname = $resp1['data'][0]['nickname'] ?? null;
+            if ($ok && !empty($resp1['userInfo']['user']['secUid'])) {
+                $user = $resp1['userInfo']['user'];
+                $stats = $resp1['userInfo']['stats'];
 
-                    $data = [
-                        "account_id" => strval($uid),
-                        "follower" => intval($follower_count),
-                        "media_count" => intval($visible_videos_count),
-                        "img" => $avatar_urls,
-                        "full_name" => $nickname,
-                        "source" => "first_endpoint"
-                    ];
+                $data = [
+                    "account_id"  => strval($user['secUid']),
+                    "follower"    => intval($stats['followerCount'] ?? 0),
+                    "media_count" => intval($stats['videoCount'] ?? 0),
+                    "img"         => strval($user['avatarLarger'] ?? ''),
+                    "full_name"   => strval($user['uniqueId'] ?? $user['nickname'] ?? ''),
+                    "source"      => "first_endpoint"
+                ];
 
-                    return [
-                        "status" => true,
-                        "msg" => "Data ditemukan",
-                        "data" => $data
-                    ];
-                }
+                return [
+                    "status" => true,
+                    "msg"    => "Data ditemukan",
+                    "data"   => $data
+                ];
             }
 
-            if ($isEmpty) {
-                $resp2 = $this->getDataFromSecondEndpoint($username);
+            // Try second endpoint: /api/search/account
+            $resp2 = $this->getDataFromSecondEndpoint($username);
+            
+            $ok2 = isset($resp2['status_code']) ? intval($resp2['status_code']) === 0
+                : (isset($resp2['statusCode']) && intval($resp2['statusCode']) === 0);
 
-                if (isset($resp2['status']) && $resp2['status'] === 'Successful' && !empty($resp2['data'][0]['user_info'])) {
-                    $userData = $resp2['data'][0]['user_info'];
+            if ($ok2 && !empty($resp2['user_list'][0]['user_info'])) {
+                $userData = $resp2['user_list'][0]['user_info'];
 
-                    $uid = $userData['sec_uid'] ?? null;
-                    $follower_count = $userData['follower_count'] ?? null;
-                    $visible_videos_count = $userData['video_count'] ?? null;
-                    $avatar_urls = $userData['avatar_thumb']['url_list'][0] ?? null;
-                    $unique_id = $userData['unique_id'] ?? null;
-                    $nickname = $userData['nickname'] ?? null;
+                $data = [
+                    "account_id"  => strval($userData['sec_uid'] ?? ''),
+                    "follower"    => intval($userData['follower_count'] ?? 0),
+                    "media_count" => intval($userData['item_count'] ?? 0),
+                    "img"         => strval($userData['avatar_thumb']['url_list'][0] ?? ''),
+                    "full_name"   => strval($userData['unique_id'] ?? $userData['nickname'] ?? ''),
+                    "source"      => "search_endpoint"
+                ];
 
-                    $data = [
-                        "account_id"   => strval($uid),
-                        "follower"     => intval($follower_count),
-                        "media_count"  => intval($visible_videos_count),
-                        "img"          => $avatar_urls,
-                        "full_name"    => $nickname,
-                    ];
-
-                    return [
-                        "status" => true,
-                        "msg"    => "Data ditemukan",
-                        "data"   => $data
-                    ];
-                }
+                return [
+                    "status" => true,
+                    "msg"    => "Data ditemukan",
+                    "data"   => $data
+                ];
             }
-
 
             return [
                 "status" => false,
@@ -558,12 +592,12 @@ class Template
             //     $response["data"] = array();
             // }
         } else if ($type == "Tiktok") {
-            $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-scraper-api4.p.rapidapi.com');
+            $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-api23.p.rapidapi.com');
             $rapidapi_key = env('RAPIDAPI_KEY', '');
 
             $curl = curl_init();
             curl_setopt_array($curl, [
-                CURLOPT_URL => "https://{$rapidapi_host}/api/v1/user/posts?sec_uid=" . urlencode($account_id) . "&count=10",
+                CURLOPT_URL => "https://{$rapidapi_host}/api/user/posts?secUid=" . urlencode($account_id) . "&count=10&cursor=0",
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_ENCODING => "",
                 CURLOPT_MAXREDIRS => 10,
@@ -571,8 +605,8 @@ class Template
                 CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
                 CURLOPT_CUSTOMREQUEST => "GET",
                 CURLOPT_HTTPHEADER => [
-                    "X-RapidAPI-Host: {$rapidapi_host}",
-                    "X-RapidAPI-Key: {$rapidapi_key}",
+                    "x-rapidapi-host: {$rapidapi_host}",
+                    "x-rapidapi-key: {$rapidapi_key}",
                     "Accept: application/json"
                 ],
             ]);
@@ -580,34 +614,48 @@ class Template
             $response = curl_exec($curl);
 
             if ($response === false) {
-                echo 'cURL error: ' . curl_error($curl);
-                die;
+                return [
+                    "status" => false,
+                    "msg" => "cURL error: " . curl_error($curl),
+                    "data" => []
+                ];
             }
 
             curl_close($curl);
 
             $response = json_decode($response, true);
+            
+            // Check status_code in data block
+            $data_block = $response['data'] ?? [];
+            $ok = isset($data_block['status_code']) ? intval($data_block['status_code']) === 0
+                : (isset($data_block['statusCode']) && intval($data_block['statusCode']) === 0);
 
-            if ($response['status'] == 'Successful') {
-                $response["status"] = true;
-                $response["msg"] = "Data ditemukan";
-
-                $response['data'] = array_slice($response['data'], 0, 10);
-
-                $arr = array();
-                foreach ($response['data'] as $k => $v) {
-                    $detail = $v['stats'];
-                    $arr[$k]["like"]    = intval($detail['diggCount']);
-                    $arr[$k]["share"]   = intval($detail['shareCount']);
-                    $arr[$k]["comment"] = intval($detail['commentCount']);
-                    $arr[$k]["collect"] = intval($detail['collectCount']);
-                    $arr[$k]["view"]    = intval($detail['playCount']);
+            if ($ok && !empty($data_block['itemList'])) {
+                $items = array_slice($data_block['itemList'], 0, 10);
+                $arr = [];
+                
+                foreach ($items as $k => $v) {
+                    $stats = $v['stats'] ?? [];
+                    $arr[$k] = [
+                        "like"    => intval($stats['diggCount'] ?? 0),
+                        "share"   => intval($stats['shareCount'] ?? 0),
+                        "comment" => intval($stats['commentCount'] ?? 0),
+                        "collect" => intval($stats['collectCount'] ?? 0),
+                        "view"    => intval($stats['playCount'] ?? 0)
+                    ];
                 }
-                $response["data"] = $arr;
+                
+                return [
+                    "status" => true,
+                    "msg" => "Data ditemukan",
+                    "data" => $arr
+                ];
             } else {
-                $response["status"] = false;
-                $response["msg"] = "Data video tiktok account id :  <b>" . $account_id . "</b> tidak ditemukan";
-                $response["data"] = array();
+                return [
+                    "status" => false,
+                    "msg" => "Data video tiktok account id: <b>" . $account_id . "</b> tidak ditemukan",
+                    "data" => []
+                ];
             }
 
         } else {
