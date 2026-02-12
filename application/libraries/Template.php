@@ -288,15 +288,34 @@ class Template
         return '<div class="col-md-12">' . $item . '</div>';
     }
 
-    function curlRequest($url, $headers = [])
+    private function normalize_timeout($timeout, $fallback = 30)
     {
+        $timeout = intval($timeout);
+        if ($timeout <= 0) {
+            $timeout = intval($fallback);
+        }
+        if ($timeout < 5) {
+            $timeout = 5;
+        }
+        if ($timeout > 60) {
+            $timeout = 60;
+        }
+
+        return $timeout;
+    }
+
+    function curlRequest($url, $headers = [], $timeout = 30)
+    {
+        $timeout = $this->normalize_timeout($timeout, 30);
+
         $curl = curl_init();
         curl_setopt_array($curl, [
             CURLOPT_URL => $url,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_ENCODING => "",
             CURLOPT_MAXREDIRS => 10,
-            CURLOPT_TIMEOUT => 30,
+            CURLOPT_CONNECTTIMEOUT => min(10, $timeout),
+            CURLOPT_TIMEOUT => $timeout,
             CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
             CURLOPT_CUSTOMREQUEST => "GET",
             CURLOPT_HTTPHEADER => $headers,
@@ -317,8 +336,9 @@ class Template
         return json_decode($response, true);
     }
 
-    function getDataFromFirstEndpoint($username)
+    function getDataFromFirstEndpoint($username, $timeout = 30)
     {
+        $timeout = $this->normalize_timeout($timeout, 30);
         $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-api23.p.rapidapi.com');
         $rapidapi_key = env('RAPIDAPI_KEY', '');
 
@@ -334,7 +354,8 @@ class Template
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_ENCODING       => "",
             CURLOPT_MAXREDIRS      => 10,
-            CURLOPT_TIMEOUT        => 30,
+            CURLOPT_CONNECTTIMEOUT => min(10, $timeout),
+            CURLOPT_TIMEOUT        => $timeout,
             CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
             CURLOPT_CUSTOMREQUEST  => "GET",
             CURLOPT_HTTPHEADER     => $headers,
@@ -351,8 +372,9 @@ class Template
         return json_decode($response, true);
     }
 
-    function getDataFromSecondEndpoint($username)
+    function getDataFromSecondEndpoint($username, $timeout = 30)
     {
+        $timeout = $this->normalize_timeout($timeout, 30);
         $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-api23.p.rapidapi.com');
         $rapidapi_key = env('RAPIDAPI_KEY', '');
 
@@ -369,7 +391,8 @@ class Template
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_ENCODING       => "",
             CURLOPT_MAXREDIRS      => 10,
-            CURLOPT_TIMEOUT        => 30,
+            CURLOPT_CONNECTTIMEOUT => min(10, $timeout),
+            CURLOPT_TIMEOUT        => $timeout,
             CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_1_1,
             CURLOPT_CUSTOMREQUEST  => "GET",
             CURLOPT_HTTPHEADER     => $headers,
@@ -386,8 +409,9 @@ class Template
         return json_decode($response, true);
     }
 
-    function get_account_id($type, $url)
+    function get_account_id($type, $url, $timeout = 30)
     {
+        $timeout = $this->normalize_timeout($timeout, 30);
         $response = [
             "status" => true,
             "msg" => "",
@@ -471,7 +495,7 @@ class Template
             $username = str_replace('@', '', $username);
 
             // Try first endpoint: /api/user/info
-            $resp1 = $this->getDataFromFirstEndpoint($username);
+            $resp1 = $this->getDataFromFirstEndpoint($username, $timeout);
             
             // Check status_code (tiktok-api23 format)
             $ok = isset($resp1['status_code']) ? intval($resp1['status_code']) === 0
@@ -498,7 +522,7 @@ class Template
             }
 
             // Try second endpoint: /api/search/account
-            $resp2 = $this->getDataFromSecondEndpoint($username);
+            $resp2 = $this->getDataFromSecondEndpoint($username, $timeout);
             
             $ok2 = isset($resp2['status_code']) ? intval($resp2['status_code']) === 0
                 : (isset($resp2['statusCode']) && intval($resp2['statusCode']) === 0);
@@ -537,8 +561,9 @@ class Template
     }
 
 
-    function get_post_list($type, $account_id)
+    function get_post_list($type, $account_id, $timeout = 30)
     {
+        $timeout = $this->normalize_timeout($timeout, 30);
         $response = array();
         $response["status"] = true;
         $response["msg"] = "";
@@ -601,7 +626,8 @@ class Template
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_ENCODING => "",
                 CURLOPT_MAXREDIRS => 10,
-                CURLOPT_TIMEOUT => 30,
+                CURLOPT_CONNECTTIMEOUT => min(10, $timeout),
+                CURLOPT_TIMEOUT => $timeout,
                 CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
                 CURLOPT_CUSTOMREQUEST => "GET",
                 CURLOPT_HTTPHEADER => [

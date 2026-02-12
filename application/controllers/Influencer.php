@@ -995,142 +995,327 @@ class Influencer extends BaseController
         }
     }
     
-    public function sync_external_process()
+    private function send_json_response($payload, $status_code = 200)
     {
-        header('Content-Type: application/json');
-        
-        // Get batch parameters - increased to 10
-        $batch_size = intval($_POST['batch_size'] ?? 10);
-        $offset = intval($_POST['offset'] ?? 0);
-        
-        // Smart filtering: Skip recently synced (within last hour)
-        $one_hour_ago = date('Y-m-d H:i:s', strtotime('-1 hour'));
-        
-        // Get total count with smart filter
-        $total_query = "SELECT COUNT(*) as total FROM influencer 
-                        WHERE avg_interaksi_2 = 0 
-                        AND status = 'Aktif' 
-                        AND (sync_at IS NULL OR sync_at < '$one_hour_ago')";
-        $total_result = $this->mymodel->selectWithQuery($total_query);
-        $total = intval($total_result[0]['total']);
-        
-        // Get batch with smart filter (MySQL compatible - NULL values sort first by default)
-        $list = $this->mymodel->selectWithQuery("
-            SELECT * FROM influencer 
-            WHERE avg_interaksi_2 = 0 
-            AND status = 'Aktif' 
-            AND (sync_at IS NULL OR sync_at < '$one_hour_ago')
-            ORDER BY ISNULL(sync_at) DESC, sync_at ASC
-            LIMIT $batch_size OFFSET $offset
-        ");
+        $this->output
+            ->set_status_header($status_code)
+            ->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($payload));
+    }
 
-        $processed = 0;
-        $errors = [];
+    private function get_external_sync_scope($today, $pending_only = true)
+    {
+        $scope = "status = 'Aktif' AND COALESCE(url, '') != '' AND avg_interaksi_2 = 0";
 
-        foreach ($list as $vl) {
-            $id = $vl['id'];
-
-            // Update internal metrics from endorse
-            $endorse = $this->mymodel->selectWithQuery("
-                SELECT COUNT(id) as frequency, SUM(total_cost) as total_cost, SUM(views) as views, 
-                AVG(views) as avg_views, 
-                AVG(likes+comment+share_save) as avg_interaksi, 
-                SUM(likes) as likes,
-                SUM(share_save) as share,
-                SUM(comment) as comment
-                FROM endorse WHERE influencer = '$id' AND link_upload != ''
-            ");
-            $endorse = $endorse[0];
-
-            $dt = [
-                'sync_at' => date("Y-m-d H:i:s"),
-                'frequency' => $endorse['frequency'],
-                'total_cost' => $endorse['total_cost'],
-                'view' => $endorse['views'],
-                'like' => $endorse['likes'],
-                'comment' => $endorse['comment'],
-                'share' => $endorse['share'],
-                'avg_view' => $endorse['avg_views'],
-                'avg_interaksi' => $endorse['avg_interaksi'],
-                'cpm' => ($endorse['total_cost'] > 0 && $endorse['views'] > 0) 
-                    ? $endorse['total_cost'] / $endorse['views'] * 1000 : 0
-            ];
-            $this->db->update('influencer', $dt, ['id' => $id]);
-
-            // External sync (Instagram uses queue, TikTok is sync)
-            if ($vl['type'] == 'Instagram') {
-                $result = $this->template->enqueue_scrape('influencer', $id, $vl['type'], $vl['url'], 10);
-                if (!$result['status']) {
-                    $errors[] = "ID $id: " . $result['msg'];
-                }
-            } else {
-                // TikTok sync (existing logic)
-                $response = $this->template->get_account_id($vl['type'], $vl['url']);
-                if ($response['status']) {
-                    $dt = [
-                        'updated_at' => date("Y-m-d H:i:s"),
-                        'account_id' => $response['data']['account_id'],
-                        'img' => $response['data']['img'],
-                        'follower' => $response['data']['follower'],
-                        'media_count' => $response['data']['media_count']
-                    ];
-                    $this->db->update('influencer', $dt, ['id' => $id]);
-
-                    $post_response = $this->template->get_post_list($vl['type'], $response['data']['account_id']);
-                    if ($post_response['status']) {
-                        $like = $comment = $collect = $share = $view = 0;
-                        $i = 0;
-                        foreach ($post_response['data'] as $v) {
-                            $like += $v['like'];
-                            $comment += $v['comment'];
-                            $collect += $v['collect'];
-                            $share += $v['share'];
-                            $view += $v['view'];
-                            if (++$i >= 10) break;
-                        }
-
-                        $avg_view = $i ? $view / $i : 0;
-                        $avg_interaksi = $i ? ($like + $comment + $collect + $share) / $i : 0;
-                        $er = ($avg_view > 0) ? ($avg_interaksi / $avg_view * 100) : 0;
-
-                        $dt_2 = [
-                            'sync_at' => date("Y-m-d H:i:s"),
-                            'frequency_2' => $i,
-                            'er' => $er,
-                            'updated_at' => date("Y-m-d H:i:s"),
-                            'view_2' => $view,
-                            'like_2' => $like,
-                            'collect_2' => $collect,
-                            'share_2' => $share,
-                            'comment_2' => $comment,
-                            'avg_view_2' => $avg_view,
-                            'avg_interaksi_2' => $avg_interaksi,
-                            'cpm_2' => ($vl['ratecard'] > 0 && $avg_view > 0) 
-                                ? $vl['ratecard'] / $avg_view * 1000 : 0
-                        ];
-                        $this->db->update('influencer', $dt_2, ['id' => $id]);
-                    }
-                }
-            }
-            $processed++;
+        if ($pending_only) {
+            $scope .= " AND (sync_at IS NULL OR DATE(sync_at) < '$today')";
         }
 
-        $new_offset = $offset + $batch_size;
-        $has_more = $new_offset < $total;
+        return $scope;
+    }
 
-        echo json_encode([
+    private function get_external_sync_stats($today)
+    {
+        $base_scope = $this->get_external_sync_scope($today, false);
+        $pending_scope = $this->get_external_sync_scope($today, true);
+
+        $pending_query = $this->mymodel->selectWithQuery("SELECT COUNT(*) AS total FROM influencer WHERE $pending_scope");
+        $synced_today_query = $this->mymodel->selectWithQuery("SELECT COUNT(*) AS total FROM influencer WHERE $base_scope AND DATE(sync_at) = '$today'");
+        $scope_total_query = $this->mymodel->selectWithQuery("SELECT COUNT(*) AS total FROM influencer WHERE $base_scope");
+        $last_sync_query = $this->mymodel->selectWithQuery("SELECT MAX(sync_at) AS last_sync_at FROM influencer WHERE $base_scope");
+
+        return [
+            'pending_today' => intval($pending_query[0]['total'] ?? 0),
+            'synced_today' => intval($synced_today_query[0]['total'] ?? 0),
+            'total_scope' => intval($scope_total_query[0]['total'] ?? 0),
+            'last_sync_at' => $last_sync_query[0]['last_sync_at'] ?? null
+        ];
+    }
+
+    private function acquire_sync_lock()
+    {
+        $lock_file = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'bka_influencer_sync_external.lock';
+        $handle = @fopen($lock_file, 'c');
+        if ($handle === false) {
+            return false;
+        }
+
+        if (!flock($handle, LOCK_EX | LOCK_NB)) {
+            fclose($handle);
+            return false;
+        }
+
+        return $handle;
+    }
+
+    private function release_sync_lock($handle)
+    {
+        if (is_resource($handle)) {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    public function sync_external_status()
+    {
+        $today = date('Y-m-d');
+        $stats = $this->get_external_sync_stats($today);
+
+        $this->send_json_response([
             'status' => 'success',
-            'processed' => $processed,
-            'total' => $total,
-            'offset' => $new_offset,
-            'has_more' => $has_more,
-            'progress' => min(100, round(($new_offset / $total) * 100)),
-            'errors' => $errors,
-            'message' => $has_more 
-                ? "Processing batch... ($new_offset/$total)" 
-                : "Completed! ($total/$total)"
+            'today' => $today,
+            'pending_today' => $stats['pending_today'],
+            'synced_today' => $stats['synced_today'],
+            'total_scope' => $stats['total_scope'],
+            'last_sync_at' => $stats['last_sync_at'],
+            'message' => $stats['pending_today'] > 0
+                ? "{$stats['pending_today']} data baru belum diupdate hari ini."
+                : "Semua data baru sudah diupdate hari ini."
         ]);
-        exit;
+    }
+
+    public function sync_external_process()
+    {
+        if (strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+            $this->send_json_response([
+                'status' => 'error',
+                'message' => 'Method tidak diizinkan'
+            ], 405);
+            return;
+        }
+
+        $batch_size = intval($_POST['batch_size'] ?? 2);
+        if ($batch_size < 1) {
+            $batch_size = 1;
+        }
+        if ($batch_size > 5) {
+            $batch_size = 5;
+        }
+
+        $today = date('Y-m-d');
+        $total_target = intval($_POST['total_target'] ?? 0);
+        $user = $_SESSION['user'] ?? [];
+        $user_id = intval($user['id'] ?? 0);
+        $api_timeout = intval(env('INFLUENCER_SYNC_API_TIMEOUT', 10));
+        if ($api_timeout < 5) {
+            $api_timeout = 5;
+        }
+        if ($api_timeout > 30) {
+            $api_timeout = 30;
+        }
+
+        $lock_handle = $this->acquire_sync_lock();
+        if ($lock_handle === false) {
+            $this->send_json_response([
+                'status' => 'busy',
+                'message' => 'Sinkronisasi sedang berjalan oleh proses lain. Coba lagi dalam beberapa detik.'
+            ], 429);
+            return;
+        }
+
+        try {
+            $stats_before = $this->get_external_sync_stats($today);
+
+            if ($stats_before['pending_today'] <= 0) {
+                $this->send_json_response([
+                    'status' => 'success',
+                    'processed' => 0,
+                    'pending_after' => 0,
+                    'synced_today' => $stats_before['synced_today'],
+                    'total_target' => 0,
+                    'has_more' => false,
+                    'progress' => 100,
+                    'errors' => [],
+                    'message' => "Semua data baru sudah diupdate hari ini ($today)."
+                ]);
+                return;
+            }
+
+            if ($total_target <= 0) {
+                $total_target = $stats_before['pending_today'];
+            }
+
+            $scope = $this->get_external_sync_scope($today, true);
+            $list = $this->mymodel->selectWithQuery("
+                SELECT id, type, url, ratecard
+                FROM influencer
+                WHERE $scope
+                ORDER BY ISNULL(sync_at) DESC, sync_at ASC, id ASC
+                LIMIT $batch_size
+            ");
+
+            if (empty($list)) {
+                $stats_after = $this->get_external_sync_stats($today);
+                $this->send_json_response([
+                    'status' => 'success',
+                    'processed' => 0,
+                    'pending_after' => $stats_after['pending_today'],
+                    'synced_today' => $stats_after['synced_today'],
+                    'total_target' => $total_target,
+                    'has_more' => false,
+                    'progress' => 100,
+                    'errors' => [],
+                    'message' => 'Tidak ada data yang perlu diproses.'
+                ]);
+                return;
+            }
+
+            $processed = 0;
+            $errors = [];
+
+            foreach ($list as $vl) {
+                $id = intval($vl['id']);
+                $sync_at = date("Y-m-d H:i:s");
+
+                $endorse_rows = $this->mymodel->selectWithQuery("
+                    SELECT COUNT(id) AS frequency,
+                           SUM(total_cost) AS total_cost,
+                           SUM(views) AS views,
+                           AVG(views) AS avg_views,
+                           AVG(likes+comment+share_save) AS avg_interaksi,
+                           SUM(likes) AS likes,
+                           SUM(share_save) AS share,
+                           SUM(share_save) AS collect,
+                           SUM(comment) AS comment
+                    FROM endorse
+                    WHERE influencer = '$id' AND link_upload != ''
+                ");
+                $endorse = $endorse_rows[0] ?? [];
+
+                $internal_update = [
+                    'sync_at' => $sync_at,
+                    'frequency' => intval($endorse['frequency'] ?? 0),
+                    'total_cost' => floatval($endorse['total_cost'] ?? 0),
+                    'view' => intval($endorse['views'] ?? 0),
+                    'like' => intval($endorse['likes'] ?? 0),
+                    'comment' => intval($endorse['comment'] ?? 0),
+                    'collect' => intval($endorse['collect'] ?? 0),
+                    'share' => intval($endorse['share'] ?? 0),
+                    'avg_view' => floatval($endorse['avg_views'] ?? 0),
+                    'avg_interaksi' => floatval($endorse['avg_interaksi'] ?? 0),
+                    'cpm' => (floatval($endorse['total_cost'] ?? 0) > 0 && intval($endorse['views'] ?? 0) > 0)
+                        ? floatval($endorse['total_cost']) / intval($endorse['views']) * 1000
+                        : 0,
+                    'updated_at' => $sync_at
+                ];
+                if ($user_id > 0) {
+                    $internal_update['updated_by'] = strval($user_id);
+                }
+
+                $this->db->update('influencer', $internal_update, ['id' => $id]);
+
+                if ($vl['type'] == 'Instagram') {
+                    $enqueue = $this->template->enqueue_scrape('influencer', $id, $vl['type'], $vl['url'], 10);
+                    if (!$enqueue['status']) {
+                        $errors[] = "ID $id: " . ($enqueue['msg'] ?? 'Gagal mengantrikan Instagram scrape.');
+                    }
+                    $processed++;
+                    continue;
+                }
+
+                if ($vl['type'] != 'Tiktok') {
+                    $errors[] = "ID $id: Platform {$vl['type']} belum didukung untuk sync external.";
+                    $processed++;
+                    continue;
+                }
+
+                $account_response = $this->template->get_account_id($vl['type'], $vl['url'], $api_timeout);
+                if (!$account_response['status']) {
+                    $errors[] = "ID $id: " . ($account_response['msg'] ?? 'Gagal mengambil account id.');
+                    $processed++;
+                    continue;
+                }
+
+                $account_data = $account_response['data'] ?? [];
+                $profile_update = [
+                    'updated_at' => date("Y-m-d H:i:s"),
+                    'account_id' => strval($account_data['account_id'] ?? ''),
+                    'img' => strval($account_data['img'] ?? ''),
+                    'follower' => intval($account_data['follower'] ?? 0),
+                    'media_count' => intval($account_data['media_count'] ?? 0)
+                ];
+                if ($user_id > 0) {
+                    $profile_update['updated_by'] = strval($user_id);
+                }
+                $this->db->update('influencer', $profile_update, ['id' => $id]);
+
+                $post_response = $this->template->get_post_list($vl['type'], $profile_update['account_id'], $api_timeout);
+                if (!$post_response['status']) {
+                    $errors[] = "ID $id: " . ($post_response['msg'] ?? 'Gagal mengambil daftar post.');
+                    $processed++;
+                    continue;
+                }
+
+                $posts = array_slice($post_response['data'] ?? [], 0, 10);
+                $total_posts = count($posts);
+                if ($total_posts <= 0) {
+                    $errors[] = "ID $id: Data post TikTok kosong.";
+                    $processed++;
+                    continue;
+                }
+
+                $like = 0;
+                $comment = 0;
+                $collect = 0;
+                $share = 0;
+                $view = 0;
+                foreach ($posts as $post) {
+                    $like += intval($post['like'] ?? 0);
+                    $comment += intval($post['comment'] ?? 0);
+                    $collect += intval($post['collect'] ?? 0);
+                    $share += intval($post['share'] ?? 0);
+                    $view += intval($post['view'] ?? 0);
+                }
+
+                $avg_view = $total_posts > 0 ? ($view / $total_posts) : 0;
+                $avg_interaksi = $total_posts > 0 ? (($like + $comment + $collect + $share) / $total_posts) : 0;
+                $er = $avg_view > 0 ? ($avg_interaksi / $avg_view * 100) : 0;
+
+                $external_update = [
+                    'sync_at' => date("Y-m-d H:i:s"),
+                    'frequency_2' => $total_posts,
+                    'er' => $er,
+                    'updated_at' => date("Y-m-d H:i:s"),
+                    'view_2' => $view,
+                    'like_2' => $like,
+                    'collect_2' => $collect,
+                    'share_2' => $share,
+                    'comment_2' => $comment,
+                    'avg_view_2' => $avg_view,
+                    'avg_interaksi_2' => $avg_interaksi,
+                    'cpm_2' => (floatval($vl['ratecard'] ?? 0) > 0 && $avg_view > 0)
+                        ? (floatval($vl['ratecard']) / $avg_view * 1000)
+                        : 0
+                ];
+                if ($user_id > 0) {
+                    $external_update['updated_by'] = strval($user_id);
+                }
+
+                $this->db->update('influencer', $external_update, ['id' => $id]);
+                $processed++;
+            }
+
+            $stats_after = $this->get_external_sync_stats($today);
+            $completed = $total_target > 0 ? max(0, $total_target - $stats_after['pending_today']) : 0;
+            $progress = $total_target > 0 ? min(100, round(($completed / $total_target) * 100)) : 100;
+            $has_more = $stats_after['pending_today'] > 0;
+
+            $this->send_json_response([
+                'status' => 'success',
+                'processed' => $processed,
+                'pending_after' => $stats_after['pending_today'],
+                'synced_today' => $stats_after['synced_today'],
+                'total_target' => $total_target,
+                'has_more' => $has_more,
+                'progress' => $progress,
+                'errors' => $errors,
+                'message' => $has_more
+                    ? "Batch selesai. Sisa {$stats_after['pending_today']} data."
+                    : "Selesai. Semua data baru sudah diupdate hari ini."
+            ]);
+        } finally {
+            $this->release_sync_lock($lock_handle);
+        }
     }
     
 }
