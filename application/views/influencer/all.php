@@ -410,37 +410,75 @@
     }).then((result) => {
             if (result.isConfirmed) {
                 $('#page-loading').fadeIn(200);
-    
-                $.getJSON('<?= base_url() ?>influencer/sync_external_process', function(response) {
-                    console.log("Response received", response);
-    
-                    if (response.status === 'success') {
-                    $.toast({
-                        heading: "Informasi",
-                        text: response.message,
-                        showHideTransition: "slide",
-                        icon: "success",
-                        position: "top-right",
-                        loaderBg: "#def7f0",
-                        hideAfter: 2500,
-                    });
-                    setTimeout(function() {
-                        location.reload();
-                    }, 2600); 
-                } else {
-                    $.toast({
-                        heading: "Gagal",
-                        text: response.message,
-                        icon: "error",
-                        position: "top-right"
+                
+                // Batch processing function
+                function processBatch(offset = 0) {
+                    $.ajax({
+                        url: '<?= base_url() ?>influencer/sync_external_process',
+                        type: 'POST',
+                        dataType: 'json',
+                        data: {
+                            batch_size: 5,
+                            offset: offset
+                        },
+                        success: function(response) {
+                            console.log("Batch response", response);
+                            
+                            if (response.status === 'success') {
+                                // Update progress
+                                const progress = response.progress || 0;
+                                const message = response.message || 'Processing...';
+                                
+                                // Show progress toast
+                                $.toast({
+                                    heading: "Progress",
+                                    text: message + " (" + progress + "%)",
+                                    showHideTransition: "fade",
+                                    icon: "info",
+                                    position: "top-right",
+                                    loaderBg: "#5bc0de",
+                                    hideAfter: 1000
+                                });
+                                
+                                // Continue if there's more
+                                if (response.has_more) {
+                                    processBatch(response.offset);
+                                } else {
+                                    // Completed
+                                    $('#page-loading').fadeOut(200);
+                                    $.toast({
+                                        heading: "Selesai",
+                                        text: "Semua data berhasil di-refresh!",
+                                        showHideTransition: "slide",
+                                        icon: "success",
+                                        position: "top-right",
+                                        loaderBg: "#def7f0",
+                                        hideAfter: 2500
+                                    });
+                                    setTimeout(function() {
+                                        location.reload();
+                                    }, 2600);
+                                }
+                            } else {
+                                $('#page-loading').fadeOut(200);
+                                $.toast({
+                                    heading: "Gagal",
+                                    text: response.message || "Terjadi kesalahan",
+                                    icon: "error",
+                                    position: "top-right"
+                                });
+                            }
+                        },
+                        error: function(jqXHR, textStatus, errorThrown) {
+                            console.error("AJAX Failed", textStatus, errorThrown);
+                            $('#page-loading').fadeOut(200);
+                            Swal.fire("Error", "Gagal terhubung ke server. Coba lagi.", "error");
+                        }
                     });
                 }
-                }).fail(function(jqXHR, textStatus, errorThrown) {
-                    console.error("AJAX Failed", textStatus, errorThrown);
-                    Swal.fire("Error", "Gagal terhubung ke server. Coba lagi.", "error");
-                }).always(function() {
-                    $('#page-loading').fadeOut(200);
-                });
+                
+                // Start batch processing
+                processBatch(0);
             }
         });
     });

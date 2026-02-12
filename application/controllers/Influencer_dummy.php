@@ -458,15 +458,32 @@ class Influencer_dummy extends CI_Controller {
         $url = $data['url'];
         $type = $data['type'] ? $data['type'] : 'Tiktok';
         $ratecard = $data['ratecard'];
-
         $user = $this->session->userdata('user');
 
+        // Instagram: Use async queue
+        if ($type === 'Instagram') {
+            $result = $this->template->enqueue_scrape('influencer_dummy', $id, $type, $url, 10);
+            if ($result['status']) {
+                echo json_encode([
+                    'status' => 'success',
+                    'message' => 'Data sedang diproses, akan diperbarui dalam beberapa menit.'
+                ]);
+            } else {
+                echo json_encode([
+                    'status' => 'error',
+                    'message' => 'Gagal menambahkan ke antrian: ' . $result['msg']
+                ]);
+            }
+            exit;
+        }
+
+        // TikTok: Synchronous processing
         $response = $this->template->get_account_id($type, $url);
 
         if (!$response['status']) {
             echo json_encode([
                 'status' => 'error',
-                'message' => 'Gagal mengambil account ID.'
+                'message' => 'Gagal mengambil account ID: ' . ($response['msg'] ?? 'Unknown error')
             ]);
             exit;
         }
@@ -481,18 +498,12 @@ class Influencer_dummy extends CI_Controller {
         ];
         $this->db->update('influencer_dummy', $update1, ['id' => $id]);
 
-        if ($type === "Tiktok") {
-            preg_match('/@([a-zA-Z0-9._]+)/', $url, $matches);
-            $username = $matches[1] ?? '';
-            $response = $this->template->get_post_list($type, $update1['account_id']);
-        } else {
-            $response = $this->template->get_post_list($type, $update1['account_id']);
-        }
+        $response = $this->template->get_post_list($type, $update1['account_id']);
 
         if (!$response['status']) {
             echo json_encode([
                 'status' => 'error',
-                'message' => 'Gagal mengambil data postingan.'
+                'message' => 'Gagal mengambil data postingan: ' . ($response['msg'] ?? 'Unknown error')
             ]);
             exit;
         }
