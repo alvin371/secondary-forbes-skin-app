@@ -142,9 +142,6 @@ class Roles extends BaseController
     {
         $user = $_SESSION['user'];
 
-        // Permission check handled by BaseController middleware
-        $this->require_ajax_permission('create');
-
         $dt = $_POST['dt'];
         $permissions = $_POST['permissions'] ?? array();
 
@@ -242,9 +239,6 @@ class Roles extends BaseController
     {
         $user = $_SESSION['user'];
 
-        // Permission check handled by BaseController middleware
-        $this->require_ajax_permission('edit');
-
         $id = $_POST['id'];
         $dt = $_POST['dt'];
         $permissions = $_POST['permissions'] ?? array();
@@ -336,9 +330,6 @@ class Roles extends BaseController
     public function delete()
     {
         $user = $_SESSION['user'];
-
-        // Permission check handled by BaseController middleware
-        $this->require_ajax_permission('delete');
 
         $id = $_POST['id'];
 

@@ -44,7 +44,7 @@ class Auth extends CI_Controller
         $dt['updated_by'] = $user['id'];
 
         if ($dt['password']) {
-            $dt['password'] = MD5($dt['password']);
+            $dt['password'] = password_hash($dt['password'], PASSWORD_DEFAULT);
         } else {
             unset($dt['password']);
         }
