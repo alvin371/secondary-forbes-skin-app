@@ -109,15 +109,13 @@ class BaseController extends CI_Controller
     {
         $controller = $this->router->class;
         
-        // Handle special cases with parameters
+        // ads and crm use the base module name (variants like ads_tiktok/crm_mg don't exist in DB)
         if ($controller === 'ads') {
-            $platform = $this->input->get('m');
-            return $platform ? "ads_{$platform}" : 'overview'; // Default to overview if no platform
+            return 'ads';
         }
-        
+
         if ($controller === 'crm') {
-            $brand = $this->input->get('brand');
-            return $brand ? "crm_" . strtolower($brand) : 'crm_mg'; // Default to MG
+            return 'crm';
         }
         
         // Standard mapping

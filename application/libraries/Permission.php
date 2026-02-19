@@ -79,14 +79,18 @@ class Permission
     {
         try {
             $result = $this->CI->mymodel->selectWithQuery("
-                SELECT COUNT(*) as count
-                FROM user_module_permissions 
-                WHERE user_id = $user_id 
-                AND controller = '$controller' 
+                SELECT COUNT(*) as cnt
+                FROM user_module_permissions
+                WHERE user_id = $user_id
+                AND controller = '$controller'
                 AND (can_view = 1 OR can_create = 1 OR can_edit = 1 OR can_delete = 1)
             ");
-            
-            return !empty($result) && $result[0]['count'] > 0;
+
+            if (!empty($result) && $result[0]['cnt'] > 0) {
+                return true;
+            }
+            // Fallback when view returns 0 rows (e.g. module not mapped or view just populated)
+            return $this->fallback_permission_check($user_id, $controller, 'view');
         } catch (Exception $e) {
             // Fallback to role-based check
             return $this->fallback_permission_check($user_id, $controller, 'view');
@@ -133,8 +137,9 @@ class Permission
      */
     public function get_user_sidebar_modules($user_id)
     {
+        $user_id = (int) $user_id;
         $permissions = $this->CI->mymodel->selectWithQuery("
-            SELECT 
+            SELECT
                 m.id,
                 m.name,
                 m.display_name,
@@ -147,11 +152,11 @@ class Permission
                 ump.can_edit,
                 ump.can_delete
             FROM modules m
-            LEFT JOIN user_module_permissions ump ON m.id = ump.module_id AND ump.user_id = ?
-            WHERE m.is_active = 1 
+            LEFT JOIN user_module_permissions ump ON m.id = ump.module_id AND ump.user_id = $user_id
+            WHERE m.is_active = 1
             AND (ump.can_view = 1 OR ump.can_create = 1 OR ump.can_edit = 1 OR ump.can_delete = 1)
             ORDER BY m.sort_order, m.display_name
-        ", [$user_id]);
+        ");
         
         return $this->build_module_tree($permissions);
     }
