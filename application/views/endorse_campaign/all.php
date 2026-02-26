@@ -118,7 +118,11 @@
         $("#modal-form").modal('show');
         $("#modal-dialog").removeClass('modal-sm');
         $("#title-form").html('Hapus Data');
-        $("#load-form").load("<?= base_url() ?>/endorse-campaign/remove?id=" + id);
+        $("#load-form").load("<?= base_url() ?>endorse-campaign/remove?id=" + id, function(response, status, xhr) {
+            if (status === "error") {
+                $("#load-form").html('<div class="alert alert-danger">Gagal memuat form. Anda tidak memiliki izin untuk menghapus data ini.</div>');
+            }
+        });
     }
 
     function edit(id) {
