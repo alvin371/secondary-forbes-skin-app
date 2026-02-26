@@ -1218,12 +1218,485 @@ class Endorse extends BaseController
     {
         $id = $_GET['id'];
         $data['data']['id'] = $id;
+        $data['data']['mode'] = $_GET['mode'] ?? '';
+        $data['data']['ids'] = $_GET['ids'] ?? '';
         $this->load->view("endorse/sync_all", $data);
     }
+
+    private function send_json_response($payload, $status_code = 200)
+    {
+        return $this->output
+            ->set_status_header($status_code)
+            ->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($payload));
+    }
+
+    private function get_endorse_sync_job_dir()
+    {
+        $dir = APPPATH . 'cache/endorse_sync_jobs';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+        return $dir;
+    }
+
+    private function get_endorse_sync_job_path($job_id)
+    {
+        $safe_job_id = preg_replace('/[^a-zA-Z0-9_\-]/', '_', (string)$job_id);
+        return $this->get_endorse_sync_job_dir() . DIRECTORY_SEPARATOR . $safe_job_id . '.json';
+    }
+
+    private function read_endorse_sync_job($job_id)
+    {
+        $path = $this->get_endorse_sync_job_path($job_id);
+        if (!is_file($path)) {
+            return null;
+        }
+        $raw = @file_get_contents($path);
+        if ($raw === false || $raw === '') {
+            return null;
+        }
+        $job = json_decode($raw, true);
+        return is_array($job) ? $job : null;
+    }
+
+    private function write_endorse_sync_job($job_id, array $job)
+    {
+        $path = $this->get_endorse_sync_job_path($job_id);
+        return @file_put_contents($path, json_encode($job), LOCK_EX) !== false;
+    }
+
+    private function parse_sync_ids($raw_ids)
+    {
+        $out = [];
+        $parts = explode(',', (string)$raw_ids);
+        foreach ($parts as $part) {
+            $id = intval(trim($part));
+            if ($id > 0) {
+                $out[$id] = $id;
+            }
+        }
+        return array_values($out);
+    }
+
+    private function get_sync_all_target_ids($id_campaign, $mode = '', $raw_ids = '')
+    {
+        $id_campaign = intval($id_campaign);
+        if ($id_campaign <= 0) {
+            return [];
+        }
+
+        $extra_filter = '';
+        if ($mode === 'refresh_data') {
+            $ids = $this->parse_sync_ids($raw_ids);
+            if (empty($ids)) {
+                return [];
+            }
+            $extra_filter = ' AND id IN (' . implode(',', $ids) . ')';
+        }
+
+        $rows = $this->mymodel->selectWithQuery("SELECT id
+            FROM endorse
+            WHERE id_campaign = '$id_campaign'
+            AND link_upload != ''
+            AND status = 'Aktif'
+            AND status_campaign = 'Aktif'
+            $extra_filter
+            ORDER BY id ASC");
+
+        $ids = [];
+        foreach ($rows as $row) {
+            $id = intval($row['id'] ?? 0);
+            if ($id > 0) {
+                $ids[] = $id;
+            }
+        }
+        return $ids;
+    }
+
+    public function sync_all_start()
+    {
+        if (strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+            return $this->send_json_response([
+                'status' => 'error',
+                'message' => 'Method tidak diizinkan.'
+            ], 405);
+        }
+
+        $id_campaign = intval($this->input->post('id') ?: $this->input->post('id_campaign') ?: $this->input->get('id_campaign'));
+        $mode = trim((string)($this->input->post('mode') ?: $this->input->get('mode')));
+        $raw_ids = (string)($this->input->post('ids') ?: $this->input->get('ids'));
+        $user = $_SESSION['user'] ?? [];
+        $user_id = intval($user['id'] ?? 0);
+
+        if ($id_campaign <= 0) {
+            return $this->send_json_response([
+                'status' => 'error',
+                'message' => 'Campaign tidak valid.'
+            ], 422);
+        }
+
+        $target_ids = $this->get_sync_all_target_ids($id_campaign, $mode, $raw_ids);
+        $total_target = count($target_ids);
+
+        if ($total_target <= 0) {
+            return $this->send_json_response([
+                'status' => 'success',
+                'job_id' => null,
+                'total_target' => 0,
+                'processed_total' => 0,
+                'pending_after' => 0,
+                'progress' => 100,
+                'has_more' => false,
+                'message' => 'Tidak ada data aktif yang perlu direfresh.'
+            ]);
+        }
+
+        $default_batch_size = intval(env('ENDORSE_SYNC_BATCH_SIZE', 3));
+        if ($default_batch_size < 1) {
+            $default_batch_size = 1;
+        }
+        if ($default_batch_size > 10) {
+            $default_batch_size = 10;
+        }
+
+        $job_id = str_replace('.', '_', uniqid('endorse_sync_', true));
+        $now = DATE('Y-m-d H:i:s');
+        $job = [
+            'job_id' => $job_id,
+            'id_campaign' => $id_campaign,
+            'mode' => $mode,
+            'raw_ids' => $raw_ids,
+            'target_ids' => $target_ids,
+            'total' => $total_target,
+            'processed' => 0,
+            'completed' => false,
+            'summary_updated' => false,
+            'error_count' => 0,
+            'errors' => [],
+            'created_at' => $now,
+            'updated_at' => $now,
+            'created_by' => $user_id
+        ];
+
+        if (!$this->write_endorse_sync_job($job_id, $job)) {
+            return $this->send_json_response([
+                'status' => 'error',
+                'message' => 'Gagal membuat job sinkronisasi. Coba lagi.'
+            ], 500);
+        }
+
+        return $this->send_json_response([
+            'status' => 'success',
+            'job_id' => $job_id,
+            'total_target' => $total_target,
+            'processed_total' => 0,
+            'pending_after' => $total_target,
+            'progress' => 0,
+            'has_more' => true,
+            'batch_size_default' => $default_batch_size,
+            'message' => "Job refresh dibuat untuk $total_target data."
+        ]);
+    }
+
+    private function sync_endorse_batch(array $batch_ids, $today, array $user, &$errors)
+    {
+        if (empty($batch_ids)) {
+            return;
+        }
+
+        $batch_ids = array_values(array_unique(array_map('intval', $batch_ids)));
+        $batch_ids = array_filter($batch_ids, function ($id) {
+            return $id > 0;
+        });
+        if (empty($batch_ids)) {
+            return;
+        }
+
+        $id_list = implode(',', $batch_ids);
+        $rows = $this->mymodel->selectWithQuery("SELECT a.*
+            FROM endorse a
+            WHERE a.id IN ($id_list)");
+
+        $row_map = [];
+        foreach ($rows as $row) {
+            $row_id = intval($row['id'] ?? 0);
+            if ($row_id > 0) {
+                $row_map[$row_id] = $row;
+            }
+        }
+
+        foreach ($batch_ids as $id_endorse) {
+            if (!isset($row_map[$id_endorse])) {
+                $errors[] = "ID $id_endorse: Data endorse tidak ditemukan.";
+                continue;
+            }
+
+            $row = $row_map[$id_endorse];
+            if (($row['status'] ?? '') !== 'Aktif' || ($row['status_campaign'] ?? '') !== 'Aktif' || ($row['link_upload'] ?? '') === '') {
+                continue;
+            }
+
+            $this->sync_endorse_single($row, $today, $user, $errors);
+        }
+    }
+
+    private function sync_endorse_single(array $v, $today, array $user, &$errors)
+    {
+        $id_endorse = intval($v['id'] ?? 0);
+        if ($id_endorse <= 0) {
+            return;
+        }
+
+        $user_id = intval($user['id'] ?? 0);
+        $total_cost = doubleval($v['total_cost'] ?? 0);
+        $query_today = $this->mymodel->selectWithQuery("SELECT id
+            FROM endorse_logs
+            WHERE id_endorse = '$id_endorse' AND date = '$today'
+            LIMIT 1");
+        $today_log = $query_today[0] ?? [];
+
+        $query_yesterday = $this->mymodel->selectWithQuery("SELECT *
+            FROM endorse_logs
+            WHERE id_endorse = '$id_endorse' AND date < '$today' AND views_after > 0
+            ORDER BY date DESC
+            LIMIT 1");
+        $prev = $query_yesterday[0] ?? [];
+
+        $prev_likes = intval($prev['likes_after'] ?? 0);
+        $prev_comment = intval($prev['comment_after'] ?? 0);
+        $prev_share_save = intval($prev['share_save_after'] ?? 0);
+        $prev_views = intval($prev['views_after'] ?? 0);
+
+        $response = $this->template->get_social_media($v['platform'], $v['link_upload']);
+        $response_data = (is_array($response) && isset($response['data']) && is_array($response['data'])) ? $response['data'] : [];
+        if (is_array($response) && isset($response['status']) && $response['status'] === false) {
+            $errors[] = "ID $id_endorse: " . ($response['msg'] ?? 'Gagal mengambil data social media.');
+        }
+
+        $likes_after = $prev_likes;
+        $comment_after = $prev_comment;
+        $share_after = $prev_share_save;
+        $views_after = $prev_views;
+
+        if (intval($response_data['view'] ?? 0) > 0) {
+            $likes_after = intval($response_data['like'] ?? 0);
+            $comment_after = intval($response_data['comment'] ?? 0);
+            $share_after = doubleval($response_data['share'] ?? 0) + doubleval($response_data['collect'] ?? 0);
+            $views_after = intval($response_data['view'] ?? 0);
+        }
+
+        $is_fyp = isset($v['is_fyp']) ? strval($v['is_fyp']) : '0';
+        if ($views_after >= 50000) {
+            $id_influencer = intval($v['influencer'] ?? 0);
+            if ($id_influencer > 0) {
+                $creator = $this->mymodel->selectWithQuery("SELECT follower FROM influencer WHERE id = '$id_influencer' LIMIT 1");
+                $follower = intval($creator[0]['follower'] ?? 0);
+                if ($follower > 0) {
+                    $batas = intval($follower * 30 / 100);
+                    if ($views_after >= $batas) {
+                        $is_fyp = '1';
+                    }
+                } else {
+                    $is_fyp = '1';
+                }
+            } else {
+                $is_fyp = '1';
+            }
+        }
+
+        $cpm_after = ($total_cost > 0 && $views_after > 0) ? ($total_cost / $views_after * 1000) : 0;
+        $likes_delta = $likes_after - $prev_likes;
+        $comment_delta = $comment_after - $prev_comment;
+        $share_delta = $share_after - $prev_share_save;
+        $views_delta = $views_after - $prev_views;
+        $cpm_delta = ($total_cost > 0 && $views_delta > 0) ? ($total_cost / $views_delta * 1000) : 0;
+        $cpm_before = ($total_cost > 0 && $prev_views > 0) ? ($total_cost / $prev_views * 1000) : 0;
+
+        $now = DATE("Y-m-d H:i:s");
+        $endorse_update = [
+            'status' => strval($v['status'] ?? ''),
+            'status_campaign' => strval($v['status_campaign'] ?? ''),
+            'likes' => doubleval($likes_after),
+            'comment' => doubleval($comment_after),
+            'share_save' => doubleval($share_after),
+            'views' => doubleval($views_after),
+            'cpm' => doubleval($cpm_after),
+            'is_fyp' => strval($is_fyp),
+            'sync_at' => $now,
+            'posting_at' => strval($response_data['created_at'] ?? ($v['posting_at'] ?? '')),
+            'updated_at' => $now
+        ];
+        if ($user_id > 0) {
+            $endorse_update['updated_by'] = strval($user_id);
+        }
+        $this->db->update('endorse', $endorse_update, ['id' => $id_endorse]);
+
+        $log_payload = [
+            'status' => strval($v['status'] ?? ''),
+            'status_campaign' => strval($v['status_campaign'] ?? ''),
+            'id_endorse' => strval($id_endorse),
+            'id_campaign' => strval($v['id_campaign'] ?? 0),
+            'influencer' => strval($v['influencer'] ?? ''),
+            'date' => $today,
+            'total_cost' => doubleval($total_cost),
+            'link_upload' => strval($v['link_upload'] ?? ''),
+            'platform' => strval($v['platform'] ?? ''),
+            'likes' => doubleval($likes_delta),
+            'comment' => doubleval($comment_delta),
+            'share_save' => doubleval($share_delta),
+            'views' => doubleval($views_delta),
+            'cpm' => doubleval($cpm_delta),
+            'likes_before' => intval($prev_likes),
+            'comment_before' => intval($prev_comment),
+            'share_save_before' => intval($prev_share_save),
+            'views_before' => intval($prev_views),
+            'cpm_before' => doubleval($cpm_before),
+            'likes_after' => intval($likes_after),
+            'comment_after' => intval($comment_after),
+            'share_save_after' => intval($share_after),
+            'views_after' => intval($views_after),
+            'cpm_after' => doubleval($cpm_after)
+        ];
+
+        if (!empty($today_log['id'])) {
+            $log_payload['updated_at'] = $now;
+            if ($user_id > 0) {
+                $log_payload['updated_by'] = strval($user_id);
+            }
+            $this->db->update('endorse_logs', $log_payload, ['id' => intval($today_log['id'])]);
+        } else {
+            $log_payload['created_at'] = $now;
+            if ($user_id > 0) {
+                $log_payload['created_by'] = strval($user_id);
+            }
+            $this->db->insert('endorse_logs', $log_payload);
+        }
+    }
+
+    private function sync_all_process_chunked()
+    {
+        $job_id = trim((string)$this->input->post('job_id'));
+        if ($job_id === '') {
+            return $this->send_json_response([
+                'status' => 'error',
+                'message' => 'Job ID tidak valid.'
+            ], 422);
+        }
+
+        $path = $this->get_endorse_sync_job_path($job_id);
+        $lock_path = $path . '.lock';
+        $lock_handle = @fopen($lock_path, 'c');
+        if ($lock_handle === false || !@flock($lock_handle, LOCK_EX | LOCK_NB)) {
+            if (is_resource($lock_handle)) {
+                @fclose($lock_handle);
+            }
+            return $this->send_json_response([
+                'status' => 'busy',
+                'message' => 'Proses refresh sedang berjalan. Coba lagi dalam beberapa detik.'
+            ], 429);
+        }
+
+        try {
+            $job = $this->read_endorse_sync_job($job_id);
+            if (!$job) {
+                return $this->send_json_response([
+                    'status' => 'error',
+                    'message' => 'Job sinkronisasi tidak ditemukan atau sudah kadaluarsa.'
+                ], 404);
+            }
+
+            $session_user_id = intval($_SESSION['user']['id'] ?? 0);
+            $job_user_id = intval($job['created_by'] ?? 0);
+            if ($job_user_id > 0 && $session_user_id > 0 && $job_user_id !== $session_user_id) {
+                return $this->send_json_response([
+                    'status' => 'error',
+                    'message' => 'Kamu tidak memiliki akses ke job ini.'
+                ], 403);
+            }
+
+            $total_target = intval($job['total'] ?? 0);
+            $processed_total = intval($job['processed'] ?? 0);
+            $completed = !empty($job['completed']);
+
+            if (!$completed && $total_target > 0) {
+                $batch_size = intval($this->input->post('batch_size') ?: env('ENDORSE_SYNC_BATCH_SIZE', 3));
+                if ($batch_size < 1) {
+                    $batch_size = 1;
+                }
+                if ($batch_size > 10) {
+                    $batch_size = 10;
+                }
+
+                $target_ids = $job['target_ids'] ?? [];
+                $batch_ids = array_slice($target_ids, $processed_total, $batch_size);
+                $batch_errors = [];
+
+                if (!empty($batch_ids)) {
+                    $this->sync_endorse_batch($batch_ids, DATE('Y-m-d'), $_SESSION['user'] ?? [], $batch_errors);
+                    $processed_total += count($batch_ids);
+                    $job['processed'] = $processed_total;
+                }
+
+                if (!empty($batch_errors)) {
+                    $job_errors = $job['errors'] ?? [];
+                    $job_errors = array_merge($job_errors, $batch_errors);
+                    if (count($job_errors) > 50) {
+                        $job_errors = array_slice($job_errors, -50);
+                    }
+                    $job['errors'] = $job_errors;
+                    $job['error_count'] = intval($job['error_count'] ?? 0) + count($batch_errors);
+                }
+
+                if ($processed_total >= $total_target) {
+                    $job['processed'] = $total_target;
+                    $job['completed'] = true;
+                    $job['completed_at'] = DATE('Y-m-d H:i:s');
+                    if (empty($job['summary_updated'])) {
+                        $this->update_endorse_parent(intval($job['id_campaign'] ?? 0));
+                        $job['summary_updated'] = true;
+                    }
+                }
+            }
+
+            $job['updated_at'] = DATE('Y-m-d H:i:s');
+            $this->write_endorse_sync_job($job_id, $job);
+
+            $total_target = intval($job['total'] ?? 0);
+            $processed_total = intval($job['processed'] ?? 0);
+            $pending_after = max(0, $total_target - $processed_total);
+            $progress = $total_target > 0 ? min(100, round(($processed_total / $total_target) * 100)) : 100;
+            $has_more = $pending_after > 0;
+
+            return $this->send_json_response([
+                'status' => 'success',
+                'job_id' => $job_id,
+                'total_target' => $total_target,
+                'processed_total' => $processed_total,
+                'pending_after' => $pending_after,
+                'progress' => $progress,
+                'has_more' => $has_more,
+                'error_count' => intval($job['error_count'] ?? 0),
+                'errors' => array_slice($job['errors'] ?? [], -10),
+                'message' => $has_more
+                    ? "Batch selesai. Sisa $pending_after data."
+                    : "Refresh selesai untuk $processed_total data."
+            ]);
+        } finally {
+            @flock($lock_handle, LOCK_UN);
+            @fclose($lock_handle);
+        }
+    }
+
     public function sync_all_process()
     {
-        $id = $_POST['id'];
+        if ($this->input->post('job_id')) {
+            return $this->sync_all_process_chunked();
+        }
+
+        $id = $_POST['id'] ?? '';
         $filter = $_GET;
+        $qry = "";
 
         // $target = DATE("Y-m-d 12:00:00");
         $target = DATE("Y-m-d 23:30:00");
