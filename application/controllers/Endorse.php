@@ -22,7 +22,9 @@ class Endorse extends BaseController
             'remove' => 'delete',
             'action' => 'edit',
             'transfer_process' => 'edit',
-            'transfer_campaigns' => 'view'
+            'transfer_campaigns' => 'view',
+            'edit_stats' => 'edit',
+            'update_stats' => 'edit'
         ]);
         
     }
@@ -1972,6 +1974,198 @@ class Endorse extends BaseController
 
         $data['brand'] = $query;
         $this->load->view("endorse/edit", $data);
+    }
+
+    public function edit_stats()
+    {
+        $id = (int) $this->input->get('id', true);
+        if ($id <= 0) {
+            echo $this->template->alert_danger('Data tidak valid.');
+            return;
+        }
+
+        $data['data'] = $this->mymodel->selectDataOne('endorse', ['id' => $id]);
+        if (empty($data['data'])) {
+            echo $this->template->alert_danger('Data endorse tidak ditemukan.');
+            return;
+        }
+
+        $this->load->view('endorse/edit_stats', $data);
+    }
+
+    public function update_stats()
+    {
+        $user = $_SESSION['user'];
+        $id = (int) $this->input->post('id', true);
+        $dt = $this->input->post('dt');
+
+        if ($id <= 0 || !is_array($dt)) {
+            return $this->output
+                ->set_content_type('application/json')
+                ->set_output(json_encode([
+                    'status' => false,
+                    'message' => 'Payload tidak valid.'
+                ]));
+        }
+
+        $endorse = $this->mymodel->selectDataOne('endorse', ['id' => $id]);
+        if (empty($endorse)) {
+            return $this->output
+                ->set_content_type('application/json')
+                ->set_output(json_encode([
+                    'status' => false,
+                    'message' => 'Data endorse tidak ditemukan.'
+                ]));
+        }
+
+        $parse_non_negative_int = function ($value) {
+            $value = trim((string) $value);
+            if ($value === '' || !preg_match('/^\d+$/', $value)) {
+                return null;
+            }
+            return (int) $value;
+        };
+
+        $views = $parse_non_negative_int($dt['views'] ?? null);
+        $likes = $parse_non_negative_int($dt['likes'] ?? null);
+        $comment = $parse_non_negative_int($dt['comment'] ?? null);
+        $share_save = $parse_non_negative_int($dt['share_save'] ?? null);
+
+        if ($views === null || $likes === null || $comment === null || $share_save === null) {
+            return $this->output
+                ->set_content_type('application/json')
+                ->set_output(json_encode([
+                    'status' => false,
+                    'message' => 'Pastikan semua nilai statistik berupa angka >= 0.'
+                ]));
+        }
+
+        $total_cost = (float) ($endorse['total_cost'] ?? 0);
+        $cpm = ($total_cost > 0 && $views > 0) ? ($total_cost / $views) * 1000 : 0;
+        $now = date('Y-m-d H:i:s');
+        $today = date('Y-m-d');
+
+        $update_endorse = [
+            'views' => $views,
+            'likes' => $likes,
+            'comment' => $comment,
+            'share_save' => $share_save,
+            'cpm' => $cpm,
+            'sync_at' => $now,
+            'updated_at' => $now,
+            'updated_by' => $user['id']
+        ];
+
+        $today_esc = $this->db->escape($today);
+        $prev_log = $this->mymodel->selectWithQuery("
+            SELECT likes_after, comment_after, share_save_after, views_after
+            FROM endorse_logs
+            WHERE id_endorse = {$id}
+              AND date < {$today_esc}
+            ORDER BY date DESC
+            LIMIT 1
+        ");
+        $prev_log = $prev_log[0] ?? [];
+
+        $likes_before = (int) ($prev_log['likes_after'] ?? 0);
+        $comment_before = (int) ($prev_log['comment_after'] ?? 0);
+        $share_save_before = (int) ($prev_log['share_save_after'] ?? 0);
+        $views_before = (int) ($prev_log['views_after'] ?? 0);
+
+        $likes_after = $likes;
+        $comment_after = $comment;
+        $share_save_after = $share_save;
+        $views_after = $views;
+
+        $likes_delta = $likes_after - $likes_before;
+        $comment_delta = $comment_after - $comment_before;
+        $share_save_delta = $share_save_after - $share_save_before;
+        $views_delta = $views_after - $views_before;
+
+        $cpm_before = ($total_cost > 0 && $views_before > 0) ? ($total_cost / $views_before) * 1000 : 0;
+        $cpm_after = ($total_cost > 0 && $views_after > 0) ? ($total_cost / $views_after) * 1000 : 0;
+        $cpm_delta = ($total_cost > 0 && $views_delta > 0) ? ($total_cost / $views_delta) * 1000 : 0;
+
+        $log_payload = [
+            'status' => (string) ($endorse['status'] ?? ''),
+            'status_campaign' => (string) ($endorse['status_campaign'] ?? ''),
+            'id_endorse' => (string) $id,
+            'id_campaign' => (string) ($endorse['id_campaign'] ?? ''),
+            'influencer' => (string) ($endorse['influencer'] ?? ''),
+            'date' => $today,
+            'likes' => (string) $likes_delta,
+            'comment' => (string) $comment_delta,
+            'share_save' => (string) $share_save_delta,
+            'views' => (string) $views_delta,
+            'cpm' => (string) $cpm_delta,
+            'total_cost' => (string) $total_cost,
+            'link_upload' => (string) ($endorse['link_upload'] ?? ''),
+            'platform' => (string) ($endorse['platform'] ?? ''),
+            'likes_before' => (string) $likes_before,
+            'comment_before' => (string) $comment_before,
+            'share_save_before' => (string) $share_save_before,
+            'views_before' => (string) $views_before,
+            'cpm_before' => (string) $cpm_before,
+            'likes_after' => (string) $likes_after,
+            'comment_after' => (string) $comment_after,
+            'share_save_after' => (string) $share_save_after,
+            'views_after' => (string) $views_after,
+            'cpm_after' => (string) $cpm_after
+        ];
+
+        if (!empty($endorse['brand'])) {
+            $log_payload['brand'] = (string) $endorse['brand'];
+        }
+
+        $today_log = $this->mymodel->selectWithQuery("
+            SELECT id
+            FROM endorse_logs
+            WHERE id_endorse = {$id}
+              AND date = {$today_esc}
+            LIMIT 1
+        ");
+        $today_log = $today_log[0] ?? null;
+
+        $this->db->trans_start();
+        $this->db->update('endorse', $update_endorse, ['id' => $id]);
+
+        if (!empty($today_log['id'])) {
+            $log_payload['updated_at'] = $now;
+            $log_payload['updated_by'] = (string) $user['id'];
+            $this->db->update('endorse_logs', $log_payload, ['id' => $today_log['id']]);
+        } else {
+            $log_payload['created_at'] = $now;
+            $log_payload['created_by'] = (string) $user['id'];
+            $this->db->insert('endorse_logs', $log_payload);
+        }
+        $this->db->trans_complete();
+
+        if ($this->db->trans_status() === false) {
+            return $this->output
+                ->set_content_type('application/json')
+                ->set_output(json_encode([
+                    'status' => false,
+                    'message' => 'Gagal menyimpan statistik.'
+                ]));
+        }
+
+        $this->update_endorse_parent($endorse['id_campaign']);
+
+        return $this->output
+            ->set_content_type('application/json')
+            ->set_output(json_encode([
+                'status' => true,
+                'message' => 'Statistik berhasil diperbarui.',
+                'data' => [
+                    'id' => $id,
+                    'views' => $views,
+                    'likes' => $likes,
+                    'comment' => $comment,
+                    'share_save' => $share_save,
+                    'cpm' => $cpm,
+                    'sync_at' => $now
+                ]
+            ]));
     }
 
     public function update()

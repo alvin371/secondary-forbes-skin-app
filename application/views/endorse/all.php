@@ -780,23 +780,28 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
         <td>
             <div class="d-flex justify-content-between align-items-center w-100">
                 <span><?= $notif ?></span>
-                <div class="dropdown">
-                    <button class="btn btn-primary dropdown-toggle" type="button" id="dropdownView" data-bs-toggle="dropdown" aria-expanded="false">
-                        Pilih Tampilan
-                    </button>
-                    <ul class="dropdown-menu" aria-labelledby="dropdownView">
-                        <?php
-                        $current_params = $_GET;
+                <div class="d-flex align-items-center gap-2">
+                    <a href="#!" onclick="sync_all('<?= $detail['id'] ?>')" class="btn btn-sync mt-0 mb-0">
+                        <i class="bi bi-bootstrap-reboot fs-16"></i> Refresh All
+                    </a>
+                    <div class="dropdown">
+                        <button class="btn btn-primary dropdown-toggle" type="button" id="dropdownView" data-bs-toggle="dropdown" aria-expanded="false">
+                            Pilih Tampilan
+                        </button>
+                        <ul class="dropdown-menu" aria-labelledby="dropdownView">
+                            <?php
+                            $current_params = $_GET;
 
-                        $current_params['view'] = 'card';
-                        $card_url = 'endorse?' . http_build_query($current_params);
+                            $current_params['view'] = 'card';
+                            $card_url = 'endorse?' . http_build_query($current_params);
 
-                        $current_params['view'] = 'table';
-                        $table_url = 'endorse?' . http_build_query($current_params);
-                        ?>
-                        <li><a class="dropdown-item" href="<?= $card_url ?>">Tampilan Kartu</a></li>
-                        <li><a class="dropdown-item" href="<?= $table_url ?>">Tampilan List</a></li>
-                    </ul>
+                            $current_params['view'] = 'table';
+                            $table_url = 'endorse?' . http_build_query($current_params);
+                            ?>
+                            <li><a class="dropdown-item" href="<?= $card_url ?>">Tampilan Kartu</a></li>
+                            <li><a class="dropdown-item" href="<?= $table_url ?>">Tampilan List</a></li>
+                        </ul>
+                    </div>
                 </div>
             </div>
         </td>
@@ -1350,6 +1355,10 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
 
         function sync(id) {
             showModal('Refresh Data', `<?= base_url() ?>/endorse/sync?id=${id}`);
+        }
+
+        function edit_stats(id) {
+            showModal('Edit Stats', `<?= base_url() ?>/endorse/edit-stats?id=${id}`);
         }
 
         function clone(id) {

@@ -291,6 +291,13 @@ if ($view == 'table') {
                     } else if (in_array($v['pengajuan_status_payment'], array('Pengajuan Payment FP'))) {
                         $bg_payment = '#A5BFCC';
                     }
+
+                    $can_edit_stats = !empty($v['link_upload'])
+                        && (int) $v['views'] === 0
+                        && (float) $v['cpm'] == 0.0
+                        && (int) $v['likes'] === 0
+                        && (int) $v['comment'] === 0
+                        && (int) $v['share_save'] === 0;
                 ?>
                 <tr>
                     <!-- <td><?= $k + 1 ?></td> -->
@@ -419,6 +426,13 @@ if ($view == 'table') {
                                     <li>
                                         <a href="#!" class="dropdown-item" onclick="sync('<?= $v['id'] ?>')">
                                             <i class="bi bi-bootstrap-reboot me-2"></i> Refresh
+                                        </a>
+                                    </li>
+                                    <?php } ?>
+                                    <?php if ($can_edit_stats) { ?>
+                                    <li>
+                                        <a href="#!" class="dropdown-item" onclick="edit_stats('<?= $v['id'] ?>')">
+                                            <i class="bi bi-graph-up-arrow me-2"></i> Edit Stats
                                         </a>
                                     </li>
                                     <?php } ?>
@@ -610,6 +624,12 @@ if ($view == 'table') {
         }
 
         $current_url = $_SERVER['REQUEST_URI'];
+        $can_edit_stats = !empty($v['link_upload'])
+            && (int) $v['views'] === 0
+            && (float) $v['cpm'] == 0.0
+            && (int) $v['likes'] === 0
+            && (int) $v['comment'] === 0
+            && (int) $v['share_save'] === 0;
 
         if (strpos($current_url, 'endorse/item-endorse') !== false) {
             $display_k = $k + 1;
@@ -692,6 +712,9 @@ if ($view == 'table') {
 
                 <?php if ($v['status'] == "Aktif" && $v['status_campaign'] == "Aktif" && $v['link_upload'] != "") { ?>
                     <a href="#!" onclick="sync('<?= $v['id'] ?>')" class="btn btn-sync ms-1 mt-0 mb-2"><i class="bi bi-bootstrap-reboot fs-16"></i> Refresh</a>
+                <?php } ?>
+                <?php if ($can_edit_stats) { ?>
+                    <a href="#!" onclick="edit_stats('<?= $v['id'] ?>')" class="btn btn-edit ms-1 mt-0 mb-2"><i class="bi bi-graph-up-arrow fs-16"></i> Edit Stats</a>
                 <?php } ?>
                 <a href="#!" onclick="clone('<?= $v['id'] ?>')" class="btn btn-copy ms-1 mt-0 mb-2"><i class="bi bi-copy fs-16"></i> Kloning</a>
                 <a href="#!" onclick="edit('<?= $v['id'] ?>')" class="btn btn-edit  mt-0 ms-1 mb-2"><i class="bi bi-pencil-square fs-16"></i> Edit Data</a>
