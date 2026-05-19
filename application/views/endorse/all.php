@@ -1567,6 +1567,25 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
     </script>
 
     <script>
+        function highlightEndorseFromQuery() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const endorseId = urlParams.get('highlight_endorse');
+            if (!endorseId) {
+                return;
+            }
+
+            const target = document.getElementById('endorse-card-' + endorseId) || document.getElementById('endorse-row-' + endorseId);
+            if (!target) {
+                return;
+            }
+
+            target.classList.add('endorse-highlight');
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            window.setTimeout(function() {
+                target.classList.remove('endorse-highlight');
+            }, 3200);
+        }
+
         function loadMoreData() {
             const urlParams = new URLSearchParams(window.location.search);
             const sortColumn = urlParams.get('sort_column') || 'id';
@@ -1580,6 +1599,7 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
                     select3();
                     initSorting();
                     updateSortingIcons(sortColumn, sortOrder);
+                    highlightEndorseFromQuery();
                 },
                 error: function(xhr, status, error) {
                     console.error("Error loading data:", error);
@@ -1637,6 +1657,7 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
                     select3();
                     initSorting();
                     updateSortingIcons(sortColumn, sortOrder);
+                    highlightEndorseFromQuery();
 
                     $(window).scrollTop(scrollPosition);
                 },

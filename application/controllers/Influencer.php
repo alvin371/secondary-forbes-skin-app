@@ -562,7 +562,8 @@ class Influencer extends BaseController
                 if ($query['type'] == "Tiktok") {
                     $url = $query['url'];
                     preg_match('/@([a-zA-Z0-9_]+)/', $url, $matches);
-                    $response = $this->template->get_post_list($query['type'], $response['data']['account_id']);
+                    $username = $response['data']['username'] ?? ($matches[1] ?? '');
+                    $response = $this->template->get_post_list($query['type'], $username);
                 } else {
                     $response = $this->template->get_post_list($query['type'], $response['data']['account_id']);
                 }
@@ -746,7 +747,8 @@ class Influencer extends BaseController
         $dt['media_count'] = $response['data']['media_count'];
         $this->db->update('influencer', $dt, array('id' => $id));
 
-        $response = $this->template->get_post_list($query['type'], $response['data']['account_id']);
+        $post_account = $query['type'] === 'Tiktok' ? ($response['data']['username'] ?? '') : ($response['data']['account_id'] ?? '');
+        $response = $this->template->get_post_list($query['type'], $post_account);
 
         if ($response['status'] == false) {
             $msg = $response['msg'];
@@ -1239,7 +1241,8 @@ class Influencer extends BaseController
                 }
                 $this->db->update('influencer', $profile_update, ['id' => $id]);
 
-                $post_response = $this->template->get_post_list($vl['type'], $profile_update['account_id'], $api_timeout);
+                $post_account = $vl['type'] === 'Tiktok' ? strval($account_data['username'] ?? '') : $profile_update['account_id'];
+                $post_response = $this->template->get_post_list($vl['type'], $post_account, $api_timeout);
                 if (!$post_response['status']) {
                     $errors[] = "ID $id: " . ($post_response['msg'] ?? 'Gagal mengambil daftar post.');
                     $processed++;

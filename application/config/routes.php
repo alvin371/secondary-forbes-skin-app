@@ -75,6 +75,8 @@ $route['api/marketplace/order/download'] = 'Api_v2/marketplace_order_download';
 
 $route['api/cronjob/endorse-campaign'] = 'Api_v2/cronjob_endorse_campaign';
 $route['api/cronjob/endorse'] = 'Api_v2/cronjob_endorse';
+$route['api/cronjob/endorse-refresh'] = 'Api_v2/cronjob_endorse_refresh';
+$route['api/cronjob/endorse-refresh-enqueue-daily'] = 'Api_v2/cronjob_endorse_refresh_enqueue_daily';
 $route['api/cronjob/influencer'] = 'Api_v2/cronjob_influencer';
 $route['api/cronjob/influencer-dummy'] = 'Api_v2/cronjob_influencer_dummy';
 $route['cronjob/update-customer'] = 'Api/cronjob_update_customer';
@@ -91,6 +93,15 @@ $route['cronjob/expense'] = 'Expense/generate_recurring_expense';
 $route['endorse/action_generate_mou_pdf_gdocs'] = 'googlemou/action_generate_mou_pdf'; 
 $route['googlemou/oauth2callback']              = 'googlemou/oauth2callback';
 $route['googlemou']                             = 'googlemou/index';
+
+$route['ajax/refresh-campaign-endorses'] = 'Ajax/refresh_campaign_endorses';
+$route['endorse/bulk-refresh'] = 'Endorse/bulk_refresh';
+$route['endorse/queue'] = 'Endorse/queue';
+$route['endorse/queue-data'] = 'Endorse/queue_data';
+$route['endorse/queue-history'] = 'Endorse/queue_history';
+$route['endorse/queue-count'] = 'Endorse/queue_count';
+$route['endorse/force-retry'] = 'Endorse/force_retry';
+$route['endorse/clear-queue'] = 'Endorse/clear_queue';
 
 
 // OLD
@@ -152,4 +163,3 @@ $route['auth/redirect'] = 'TiktokAuth/redirect_to_auth';
 $route['auth/callback'] = 'TiktokAuth/callback';        
 $route['cronjob/expense'] = 'Api_v3/generate_recurring_expense';
 $route['cronjob/sync-product'] = 'Api_v3/sync_all_product';
-

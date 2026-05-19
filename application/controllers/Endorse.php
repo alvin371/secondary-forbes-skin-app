@@ -11,6 +11,8 @@ class Endorse extends BaseController
         $this->load->database();
         $this->load->model('mymodel');
         $this->load->library('template');
+        $this->load->library('endorse_sync');
+        $this->load->library('endorseRefreshQueueService');
         $this->load->helper(['url','form']);
         $this->load->library(['email']);
 
@@ -24,7 +26,15 @@ class Endorse extends BaseController
             'transfer_process' => 'edit',
             'transfer_campaigns' => 'view',
             'edit_stats' => 'edit',
-            'update_stats' => 'edit'
+            'update_stats' => 'edit',
+            'bulk_refresh' => 'edit',
+            'force_retry' => 'edit',
+            'clear_queue' => 'edit',
+            'queue_data' => 'view',
+            'queue_history' => 'view',
+            'queue_count' => 'view',
+            'get_tiktok_photo_images' => 'view',
+            'get_tiktok_video_play' => 'view'
         ]);
         
     }
@@ -1223,6 +1233,52 @@ class Endorse extends BaseController
         $this->load->view("endorse/sync_all", $data);
     }
 
+    public function bulk_refresh()
+    {
+        if (strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+            return $this->send_json_response([
+                'status' => false,
+                'msg' => 'Method tidak diizinkan.'
+            ], 405);
+        }
+
+        $id_campaign = intval($this->input->post('id_campaign') ?: $this->input->post('id') ?: $this->input->get('id_campaign'));
+        $mode = trim((string)($this->input->post('mode') ?: $this->input->get('mode')));
+        $raw_ids = (string)($this->input->post('ids') ?: $this->input->get('ids'));
+        $user_id = intval($_SESSION['user']['id'] ?? 0);
+
+        if ($id_campaign <= 0) {
+            return $this->send_json_response([
+                'status' => false,
+                'msg' => 'Campaign tidak valid.'
+            ], 422);
+        }
+
+        $target_ids = $this->get_sync_all_target_ids($id_campaign, $mode, $raw_ids);
+        if ($mode === 'refresh_data' && empty($target_ids)) {
+            return $this->send_json_response([
+                'status' => true,
+                'msg' => 'Tidak ada data aktif yang perlu direfresh.',
+                'enqueued' => 0,
+                'skipped_duplicates' => 0,
+                'excluded_known_url' => 0,
+                'id_campaign' => $id_campaign
+            ]);
+        }
+        $queue = $this->endorserefreshqueueservice->enqueueCampaign($id_campaign, $user_id, $target_ids);
+        $payload = [
+            'status' => ($queue['status'] ?? 'error') !== 'error',
+            'msg' => $queue['msg'] ?? 'Gagal membuat antrian refresh.',
+            'enqueued' => intval($queue['enqueued'] ?? 0),
+            'skipped_duplicates' => intval($queue['skipped_duplicates'] ?? 0),
+            'excluded_known_url' => intval($queue['excluded_known_url'] ?? 0),
+            'id_campaign' => $id_campaign
+        ];
+
+        $code = $payload['status'] ? 200 : 422;
+        return $this->send_json_response($payload, $code);
+    }
+
     private function send_json_response($payload, $status_code = 200)
     {
         return $this->output
@@ -1316,87 +1372,7 @@ class Endorse extends BaseController
 
     public function sync_all_start()
     {
-        if (strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
-            return $this->send_json_response([
-                'status' => 'error',
-                'message' => 'Method tidak diizinkan.'
-            ], 405);
-        }
-
-        $id_campaign = intval($this->input->post('id') ?: $this->input->post('id_campaign') ?: $this->input->get('id_campaign'));
-        $mode = trim((string)($this->input->post('mode') ?: $this->input->get('mode')));
-        $raw_ids = (string)($this->input->post('ids') ?: $this->input->get('ids'));
-        $user = $_SESSION['user'] ?? [];
-        $user_id = intval($user['id'] ?? 0);
-
-        if ($id_campaign <= 0) {
-            return $this->send_json_response([
-                'status' => 'error',
-                'message' => 'Campaign tidak valid.'
-            ], 422);
-        }
-
-        $target_ids = $this->get_sync_all_target_ids($id_campaign, $mode, $raw_ids);
-        $total_target = count($target_ids);
-
-        if ($total_target <= 0) {
-            return $this->send_json_response([
-                'status' => 'success',
-                'job_id' => null,
-                'total_target' => 0,
-                'processed_total' => 0,
-                'pending_after' => 0,
-                'progress' => 100,
-                'has_more' => false,
-                'message' => 'Tidak ada data aktif yang perlu direfresh.'
-            ]);
-        }
-
-        $default_batch_size = intval(env('ENDORSE_SYNC_BATCH_SIZE', 3));
-        if ($default_batch_size < 1) {
-            $default_batch_size = 1;
-        }
-        if ($default_batch_size > 10) {
-            $default_batch_size = 10;
-        }
-
-        $job_id = str_replace('.', '_', uniqid('endorse_sync_', true));
-        $now = DATE('Y-m-d H:i:s');
-        $job = [
-            'job_id' => $job_id,
-            'id_campaign' => $id_campaign,
-            'mode' => $mode,
-            'raw_ids' => $raw_ids,
-            'target_ids' => $target_ids,
-            'total' => $total_target,
-            'processed' => 0,
-            'completed' => false,
-            'summary_updated' => false,
-            'error_count' => 0,
-            'errors' => [],
-            'created_at' => $now,
-            'updated_at' => $now,
-            'created_by' => $user_id
-        ];
-
-        if (!$this->write_endorse_sync_job($job_id, $job)) {
-            return $this->send_json_response([
-                'status' => 'error',
-                'message' => 'Gagal membuat job sinkronisasi. Coba lagi.'
-            ], 500);
-        }
-
-        return $this->send_json_response([
-            'status' => 'success',
-            'job_id' => $job_id,
-            'total_target' => $total_target,
-            'processed_total' => 0,
-            'pending_after' => $total_target,
-            'progress' => 0,
-            'has_more' => true,
-            'batch_size_default' => $default_batch_size,
-            'message' => "Job refresh dibuat untuk $total_target data."
-        ]);
+        return $this->bulk_refresh();
     }
 
     private function sync_endorse_batch(array $batch_ids, $today, array $user, &$errors)
@@ -1690,9 +1666,7 @@ class Endorse extends BaseController
 
     public function sync_all_process()
     {
-        if ($this->input->post('job_id')) {
-            return $this->sync_all_process_chunked();
-        }
+        return $this->bulk_refresh();
 
         $id = $_POST['id'] ?? '';
         $filter = $_GET;
@@ -1888,149 +1862,8 @@ class Endorse extends BaseController
     }
     function update_endorse_parent($id_parent)
     {
-        $user = $_SESSION['user'];
-
-        $v['id'] = $id_parent;
-        $today = DATE("Y-m-d");
-        $yesterday = DATE('Y-m-d', strtotime($today . " -1 days"));
-        $query = $this->mymodel->selectWithQuery("SELECT id
-        FROM endorse_campaign_logs
-        WHERE id_campaign = '$id_parent' AND date = '$today' ");
-        $query = $query[0];
-
-        $query_yesterday = $this->mymodel->selectWithQuery("SELECT *
-        FROM endorse_campaign_logs
-        WHERE id_campaign = '$id_parent' AND date < '$today' ORDER BY date DESC LIMIT 1 ");
-        $query_yesterday = $query_yesterday[0];
-
-        $item_detail = $this->mymodel->selectWithQuery("SELECT SUM(total_cost) as total_cost, COUNT(id) as count_endorse,
-        SUM(likes) as likes, SUM(comment) as comment, SUM(share_save) as share_save, SUM(views) as views, AVG(cpm) as cpm
-        FROM endorse
-        WHERE id_campaign = '$id_parent'  AND link_upload != ''
-        AND status = 'Aktif' ");
-        $item_detail = $item_detail[0];
-
-        $item = $this->mymodel->selectWithQuery("SELECT SUM(likes) as likes, SUM(comment) as comment, SUM(share_save) as share_save, SUM(views) as views, AVG(cpm) as cpm,
-        SUM(likes_after) as likes_after, SUM(comment_after) as comment_after, SUM(share_save_after) as share_save_after, SUM(views_after) as views_after, AVG(cpm_after) as cpm_after,
-        SUM(likes_before) as likes_before, SUM(comment_before) as comment_before, SUM(share_save_before) as share_save_before, SUM(views_before) as views_before, AVG(cpm_before) as cpm_before
-        FROM endorse_logs
-        WHERE id_campaign = '$id_parent';");
-        $dt = array();
-        $dt['id_campaign'] = $v['id'];
-        $dt['total_cost'] = doubleval($item_detail['total_cost']);
-        $dt['date'] = $today;
-        foreach ($item[0] as $k2 => $v2) {
-            $dt[$k2] = doubleval($v2);
-        }
-
-
-        $dtt = array();
-        foreach ($item_detail as $k3 => $v3) {
-            $dtt[$k3] = doubleval($v3);
-        }
-
-        $id_parent = $v['id'];
-
-        $summary = $this->mymodel->selectWithQuery("SELECT COUNT(id) as count
-        FROM endorse WHERE id_campaign = '$id_parent'  ");
-        $summary = $summary[0];
-        $dtt['count_endorse'] = intval($summary['count']);
-        $dt['ce_now'] = $dtt['count_endorse'];
-
-        $summary = $this->mymodel->selectWithQuery("SELECT COUNT(id) as count
-        FROM endorse WHERE id_campaign = '$id_parent' AND status = 'Aktif'  ");
-        $summary = $summary[0];
-        $dtt['count_endorse_active'] = intval($summary['count']);
-        $dt['ce_active_now'] = $dtt['count_endorse_active'];
-
-        $summary = $this->mymodel->selectWithQuery("SELECT COUNT(id) as count
-        FROM endorse WHERE id_campaign = '$id_parent' AND status = 'Aktif' 
-        AND link_upload != '' ");
-        $summary = $summary[0];
-        $dtt['count_endorse_processed'] = intval($summary['count']);
-        $dt['ce_processed_now'] = $dtt['count_endorse_processed'];
-
-
-        $summary = $this->mymodel->selectWithQuery("SELECT COUNT(DISTINCT influencer) as count
-        FROM endorse WHERE id_campaign = '$id_parent'  ");
-        $summary = $summary[0];
-        $dtt['count_influencer'] = intval($summary['count']);
-        $dt['ci_now'] = $dtt['count_influencer'];
-
-        $summary = $this->mymodel->selectWithQuery("SELECT COUNT(DISTINCT influencer) as count
-        FROM endorse WHERE id_campaign = '$id_parent' AND status = 'Aktif'  ");
-        $summary = $summary[0];
-        $dtt['count_influencer_active'] = intval($summary['count']);
-        $dt['ci_active_now'] = $dtt['count_influencer_active'];
-
-        $summary = $this->mymodel->selectWithQuery("SELECT COUNT(DISTINCT influencer) as count
-        FROM endorse WHERE id_campaign = '$id_parent' AND status = 'Aktif'  
-        AND link_upload != '' ");
-        $summary = $summary[0];
-        $dtt['count_influencer_processed'] = intval($summary['count']);
-        $dt['ci_processed_now'] = $dtt['count_influencer_processed'];
-
-        // print_r($query_yesterday);die;
-        $dt['ci_before'] =  $query_yesterday['ci_now'];
-        $dt['ci_active_before'] = $query_yesterday['ci_active_now'];
-        $dt['ci_processed_before'] = $query_yesterday['ci_processed_now'];
-
-        $dt['ce_before'] =  $query_yesterday['ce_now'];
-        $dt['ce_active_before'] = $query_yesterday['ce_active_now'];
-        $dt['ce_processed_before'] = $query_yesterday['ce_processed_now'];
-
-        $dt['ci_before'] =  $query_yesterday['ci_now'];
-        $dt['ci_active_before'] = $query_yesterday['ci_active_now'];
-        $dt['ci_processed_before'] = $query_yesterday['ci_processed_now'];
-        $dt['ce_before'] =  $query_yesterday['ce_now'];
-        $dt['ce_active_before'] = $query_yesterday['ce_active_now'];
-        $dt['ce_processed_before'] = $query_yesterday['ce_processed_now'];
-
-        $dt['ci_after'] =  $dt['ci_now'];
-        $dt['ci_active_after'] = $dt['ci_active_now'];
-        $dt['ci_processed_after'] = $dt['ci_processed_now'];
-        $dt['ce_after'] =  $dt['ce_now'];
-        $dt['ce_active_after'] = $dt['ce_active_now'];
-        $dt['ce_processed_after'] = $dt['ce_processed_now'];
-
-        $dt['ci_now'] =  $dt['ci_after'] - $dt['now_before'];
-        $dt['ci_active_now'] = $dt['ci_active_after'] - $dt['ci_active_before'];
-        $dt['ci_processed_now'] = $dt['ci_processed_after'] - $dt['ci_processed_before'];
-        $dt['ce_now'] =  $dt['ce_after'] - $dt['ce_before'];
-        $dt['ce_active_now'] = $dt['ce_active_after'] - $dt['ce_active_before'];
-        $dt['ce_processed_now'] = $dt['ce_processed_after'] - $dt['ce_processed_before'];
-
-        // $dt['is_cron'] = '1';
-        $dt_tmp = array();
-        foreach ($dt as $kt => $vt) {
-            $dt_tmp[$kt] = strval($vt);
-        }
-        $dt = $dt_tmp;
-
-        if ($query) {
-            $dt['updated_at'] = DATE("Y-m-d H:i:s");
-            $dt['updated_by'] = strval($user['id']);
-            $this->db->update('endorse_campaign_logs', $dt, array('id' => $query['id']));
-            // $id_parent = $query['id'];
-        } else {
-            $dt['created_at'] = DATE("Y-m-d H:i:s");
-            $dt['created_by'] = strval($user['id']);
-            $this->db->insert('endorse_campaign_logs', $dt);
-            // $id_parent = $this->db->insert_id();
-        }
-
-        $dt_tmp = array();
-        foreach ($dtt as $kt => $vt) {
-            $dt_tmp[$kt] = strval($vt);
-        }
-        $dtt = $dt_tmp;
-
-        $campaign = $this->mymodel->selectDataOne('endorse_campaign', array('id' => $id_parent));
-        $dt['brand'] = strval($campaign['brand']);
-
-        $dtt['updated_at'] = DATE("Y-m-d H:i:s");
-        $dtt['updated_by'] = strval($user['id']);
-        $this->db->update('endorse_campaign', $dtt, array('id' => $v['id']));
+        $user_id = intval($_SESSION['user']['id'] ?? 0);
+        $this->endorse_sync->update_campaign_parent(intval($id_parent), $user_id);
     }
 
     public function clone()
@@ -2214,191 +2047,282 @@ class Endorse extends BaseController
 
     public function sync_process()
     {
-        $user = $_SESSION['user'];
-        $id = $_POST['id'];
+        $user_id = intval($_SESSION['user']['id'] ?? 0);
+        $id = intval($_POST['id'] ?? 0);
+        $query = $this->mymodel->selectWithQuery("SELECT * FROM endorse WHERE id = '$id' LIMIT 1");
+        $v = $query[0] ?? [];
 
-        $query = $this->mymodel->selectWithQuery("SELECT * FROM endorse WHERE id = '$id'");
-
-        if ($query[0]['status'] != "Aktif") {
-            echo $this->template->alert_danger("Pastikan status endorse aktif.");
-            die;
-        } else if ($query[0]['status_campaign'] != "Aktif") {
-            echo $this->template->alert_danger("Pastikan status campaign aktif.");
-            die;
+        if (empty($v)) {
+            echo $this->template->alert_danger("Data endorse tidak ditemukan.");
+            return;
         }
-
-        $v = $query[0];
-        $detail = $query[0];
-
-        // Instagram: Use async queue (no immediate sync)
-        if ($v['platform'] === 'Instagram') {
-            // For Instagram, we can't sync immediately - it needs to go through ScrapingBot queue
-            // Just update the timestamp and show message
+        if (($v['status'] ?? '') !== "Aktif") {
+            echo $this->template->alert_danger("Pastikan status endorse aktif.");
+            return;
+        }
+        if (($v['status_campaign'] ?? '') !== "Aktif") {
+            echo $this->template->alert_danger("Pastikan status campaign aktif.");
+            return;
+        }
+        if (($v['platform'] ?? '') === 'Instagram') {
             $dt = [
                 'sync_at' => date("Y-m-d H:i:s"),
                 'updated_at' => date("Y-m-d H:i:s")
             ];
             $this->db->update('endorse', $dt, ['id' => $id]);
-            
             echo $this->template->alert_warning("Instagram sync memerlukan waktu. Data akan diperbarui melalui sistem antrian dalam beberapa menit.");
-            die;
+            return;
         }
 
-        // TikTok: Synchronous via RapidAPI
         $response = $this->template->get_social_media($v['platform'], $v['link_upload']);
-
-        if ($response['status'] == false) {
-            echo $this->template->alert_danger($response['msg']);
-            die;
+        if (!empty($response['status']) && $response['status'] === false) {
+            echo $this->template->alert_danger($response['msg'] ?? 'Gagal mengambil data social media.');
+            return;
         }
 
-        $id_endorse = $v['id'];
-        $today = DATE("Y-m-d");
-        $query_yesterday = $this->mymodel->selectWithQuery("SELECT * 
-        FROM endorse_logs
-        WHERE id_endorse = '$id_endorse' AND date < '$today' AND views_after > 0 ORDER BY date DESC LIMIT 1");
-        $query_yesterday = $query_yesterday[0];
-
-        $dt = array();
-        $dt['status'] = strval($v['status']);
-        $dt['status_campaign'] = strval($v['status_campaign']);
-        $dt['sync_at'] = DATE("Y-m-d H:i:s");
-
-        if ($response['data']['created_at']) {
-            $dt['posting_at'] = $response['data']['created_at'];
+        $apply = $this->endorse_sync->apply($v, $response, DATE("Y-m-d"), $user_id);
+        if (!($apply['status'] ?? false)) {
+            echo $this->template->alert_danger($apply['msg'] ?? 'Gagal menyimpan data refresh.');
+            return;
         }
 
-        $dt['likes'] = intval($query_yesterday['likes_after']);
-        $dt['comment'] = intval($query_yesterday['comment_after']);
-        $dt['share_save'] = intval($query_yesterday['share_save_after']);
-        $dt['views'] = intval($query_yesterday['views_after']);
+        $this->endorse_sync->update_campaign_parent(intval($v['id_campaign'] ?? 0), $user_id);
+        echo $this->template->alert_success('Refresh data berhasil!');
+    }
 
-        if ($response['data']['view'] > 0) {
-            $dt['likes'] = $response['data']['like'];
-            $dt['comment'] = $response['data']['comment'];
-            $dt['share_save'] = doubleval($response['data']['share']) + doubleval($response['data']['collect']);
-            $dt['views'] = $response['data']['view'];
+    public function queue()
+    {
+        $data['template'] = $this->template;
+        $data['title'] = 'Endorse Queue - ' . $this->template->title();
+        $data['id_campaign'] = intval($this->input->get('id_campaign'));
+        return view('endorse/queue', $data);
+    }
+
+    public function queue_data()
+    {
+        $length = intval($this->input->get('length'));
+        if ($length <= 0) {
+            $length = intval($this->input->get('per_page'));
+        }
+        if ($length <= 0) {
+            $length = 20;
+        }
+        if ($length > 100) {
+            $length = 100;
+        }
+        $current_page = max(1, intval($this->input->get('page')));
+        $start = max(0, intval($this->input->get('start')));
+        if ($start <= 0) {
+            $start = ($current_page - 1) * $length;
         }
 
-        $dt['likes'] = $response['data']['like'];
-        $dt['comment'] = $response['data']['comment'];
-        $dt['share_save'] = doubleval($response['data']['share']) + doubleval($response['data']['collect']);
-        $dt['views'] = $response['data']['view'];
+        $where = 'WHERE 1=1';
+        $id_campaign = intval($this->input->get('id_campaign'));
+        if ($id_campaign > 0) {
+            $where .= " AND q.id_campaign = '$id_campaign'";
+        }
 
-        if ($dt['views'] >= 50000) {
-            $id_influencer = $detail['influencer'];
-            $creator = $this->mymodel->selectWithQuery("SELECT follower
-                    FROM influencer WHERE id = '$id_influencer'");
-            $creator = $creator[0];
-            $percentage = 0;
-            $follower = intval($creator['follower']);
-            if ($follower > 0) {
-                $batas = intval($follower * 30 / 100);
-                if ($dt['views'] >= $batas) {
-                    $dt['is_fyp'] = "1";
+        $status = trim((string)$this->input->get('status'));
+        if ($status !== '') {
+            $status = $this->db->escape_str($status);
+            $where .= " AND q.status = '$status'";
+        }
+
+        $search_value = trim((string)($this->input->get('search')['value'] ?? ''));
+        if ($search_value !== '') {
+            $keyword = $this->db->escape_like_str($search_value);
+            $where .= " AND (e.nama_creator LIKE '%$keyword%' OR q.link_upload LIKE '%$keyword%' OR q.platform LIKE '%$keyword%' OR q.error_message LIKE '%$keyword%')";
+        }
+
+        $summary_rows = $this->mymodel->selectWithQuery("SELECT status, COUNT(*) AS total FROM endorse_refresh_queue GROUP BY status");
+        $summary = ['pending' => 0, 'processing' => 0, 'completed' => 0, 'failed' => 0];
+        foreach ($summary_rows as $row) {
+            $key = $row['status'] ?? '';
+            if (isset($summary[$key])) {
+                $summary[$key] = intval($row['total'] ?? 0);
+            }
+        }
+
+        $total_row = $this->mymodel->selectWithQuery("SELECT COUNT(*) AS total
+            FROM endorse_refresh_queue");
+        $records_total = intval($total_row[0]['total'] ?? 0);
+
+        $count_row = $this->mymodel->selectWithQuery("SELECT COUNT(*) AS total
+            FROM endorse_refresh_queue q
+            LEFT JOIN endorse e ON e.id = q.id_endorse
+            $where");
+        $records_filtered = intval($count_row[0]['total'] ?? 0);
+
+        $rows = $this->mymodel->selectWithQuery("SELECT
+                q.*,
+                e.nama_creator,
+                e.task,
+                e.status_endorse
+            FROM endorse_refresh_queue q
+            LEFT JOIN endorse e ON e.id = q.id_endorse
+            $where
+            ORDER BY q.id DESC
+            LIMIT $start, $length");
+
+        foreach ($rows as &$row) {
+            $id_campaign_row = intval($row['id_campaign'] ?? 0);
+            $id_endorse_row = intval($row['id_endorse'] ?? 0);
+            $detail_limit = 10;
+            $position_row = $this->mymodel->selectWithQuery("SELECT COUNT(*) AS total
+                FROM endorse
+                WHERE id_campaign = '$id_campaign_row'
+                  AND id > '$id_endorse_row'");
+            $position = intval($position_row[0]['total'] ?? 0);
+            $detail_page = intval(floor($position / $detail_limit)) + 1;
+            $row['redirect_url'] = '';
+            if ($id_campaign_row > 0 && $id_endorse_row > 0) {
+                $row['redirect_url'] = base_url() . 'endorse?id_campaign=' . $id_campaign_row
+                    . '&page=' . $detail_page
+                    . '&limit=' . $detail_limit
+                    . '&view=card'
+                    . '&highlight_endorse=' . $id_endorse_row
+                    . '#endorse-card-' . $id_endorse_row;
+            }
+        }
+        unset($row);
+
+        $total_pages = max(1, intval(ceil($records_filtered / $length)));
+
+        return $this->send_json_response([
+            'recordsTotal' => $records_total,
+            'recordsFiltered' => $records_filtered,
+            'data' => $rows,
+            'pagination' => [
+                'current_page' => $current_page,
+                'per_page' => $length,
+                'total_pages' => $total_pages,
+                'has_prev' => $current_page > 1,
+                'has_next' => $current_page < $total_pages,
+            ],
+            'summary' => $summary,
+            'health' => $this->endorserefreshqueueservice->computeHealth()['health']
+        ]);
+    }
+
+    public function queue_history()
+    {
+        $id = intval($this->input->get('id'));
+        $rows = [];
+        if ($id > 0) {
+            $rows = $this->mymodel->selectWithQuery("SELECT attempt_no, worker_id, status, error_class, error_message, started_at, finished_at, created_at
+                FROM endorse_refresh_queue_attempts
+                WHERE queue_id = '$id'
+                ORDER BY attempt_no DESC, id DESC");
+        }
+
+        return $this->send_json_response([
+            'status' => true,
+            'data' => $rows
+        ]);
+    }
+
+    public function queue_count()
+    {
+        $health = $this->endorserefreshqueueservice->computeHealth()['health'];
+        return $this->send_json_response([
+            'count' => intval($health['active_total'] ?? 0),
+            'stalled' => !empty($health['is_stalled']),
+            'oldest_pending_at' => $health['oldest_pending_at'] ?? null
+        ]);
+    }
+
+    public function force_retry()
+    {
+        if (strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+            return $this->send_json_response(['status' => false, 'msg' => 'Method tidak diizinkan.'], 405);
+        }
+
+        $ids = $this->parse_sync_ids((string)$this->input->post('ids'));
+        if (empty($ids)) {
+            return $this->send_json_response(['status' => false, 'msg' => 'Tidak ada data gagal yang dipilih.'], 422);
+        }
+
+        $user_id = intval($_SESSION['user']['id'] ?? 0);
+        $source_rows = $this->mymodel->selectWithQuery("SELECT * FROM endorse_refresh_queue WHERE id IN (" . implode(',', $ids) . ") AND status = 'failed'");
+        $inserted = 0;
+        $skipped_duplicates = 0;
+
+        foreach ($source_rows as $row) {
+            $id_endorse = intval($row['id_endorse'] ?? 0);
+            if ($id_endorse > 0) {
+                $active = $this->mymodel->selectWithQuery("SELECT id
+                    FROM endorse_refresh_queue
+                    WHERE id_endorse = '$id_endorse'
+                      AND status IN ('pending', 'processing')
+                    LIMIT 1");
+                if (!empty($active)) {
+                    $skipped_duplicates++;
+                    continue;
                 }
-            } else {
-                $dt['is_fyp'] = "1";
             }
+
+            $payload = [
+                'id_endorse' => $row['id_endorse'],
+                'id_campaign' => $row['id_campaign'],
+                'platform' => $row['platform'],
+                'link_upload' => $row['link_upload'],
+                'status' => 'pending',
+                'priority' => 10,
+                'attempts' => 0,
+                'max_attempts' => 3,
+                'error_message' => null,
+                'claimed_at' => null,
+                'worker_id' => null,
+                'enqueued_by' => $user_id > 0 ? $user_id : null,
+                'retry_source_id' => $row['id'],
+                'created_at' => DATE('Y-m-d H:i:s'),
+                'started_at' => null,
+                'completed_at' => null
+            ];
+            $this->db->insert('endorse_refresh_queue', $payload);
+            $inserted++;
         }
 
-        if ($v['total_cost'] > 0 && $dt['views'] > 0) {
-            $dt['cpm'] = doubleval($v['total_cost']) / doubleval($dt['views']) * 1000;
-        } else {
-            $dt['cpm'] = 0;
-        }
-        $dt['updated_at'] = DATE("Y-m-d H:i:s");
+        return $this->send_json_response([
+            'status' => true,
+            'msg' => $inserted . ' data gagal dimasukkan ulang ke antrian.',
+            'enqueued' => $inserted,
+            'skipped_duplicates' => $skipped_duplicates
+        ]);
+    }
 
-        if ($this->db->update('endorse', $dt, array('id' => $id))) {
-
-            unset($dt['is_fyp']);
-            unset($dt['posting_at']);
-            unset($dt['sync_at']);
-
-            $today = DATE("Y-m-d");
-            $yesterday = DATE('Y-m-d', strtotime($today . " -1 days"));
-
-            $id_endorse = $v['id'];
-            $query = $this->mymodel->selectWithQuery("SELECT id
-                FROM endorse_logs
-                WHERE id_endorse = '$id_endorse' AND date = '$today' ");
-            $query = $query[0];
-
-            $dt['id_endorse'] = strval($v['id']);
-            $dt['id_campaign'] = strval($v['id_campaign']);
-            $dt['influencer'] = strval($v['influencer']);
-            $dt['date'] = $today;
-
-            $dtt = array();
-            $dtt['likes'] = doubleval($dt['likes']);
-            $dtt['comment'] = doubleval($dt['comment']);
-            $dtt['share_save'] = doubleval($dt['share_save']);
-            $dtt['views'] = doubleval($dt['views']);
-            $dtt['cpm'] = doubleval($dt['cpm']);
-
-            $dt['total_cost'] = doubleval($v['total_cost']);
-            $dt['link_upload'] = strval($v['link_upload']);
-            $dt['platform'] = strval($v['platform']);
-
-            $dt['likes_after'] = intval($dt['likes']);
-            $dt['comment_after'] = intval($dt['comment']);
-            $dt['share_save_after'] = intval($dt['share_save']);
-            $dt['views_after'] = intval($dt['views']);
-
-            if ($v['total_cost'] > 0 && $dt['views_after'] > 0) {
-                $dt['cpm_after'] = doubleval($v['total_cost']) / doubleval($dt['views_after']) * 1000;
-            } else {
-                $dt['cpm_after'] = 0;
-            }
-
-            $dt['likes'] -= intval($query_yesterday['likes_after']);
-            $dt['comment'] -= intval($query_yesterday['comment_after']);
-            $dt['share_save'] -= intval($query_yesterday['share_save_after']);
-            $dt['views'] -= intval($query_yesterday['views_after']);
-
-            if ($v['total_cost'] > 0 && $dt['views'] > 0) {
-                $dt['cpm'] = doubleval($v['total_cost']) / doubleval($dt['views']) * 1000;
-            } else {
-                $dt['cpm'] = 0;
-            }
-
-            $dt['likes_before'] = intval($query_yesterday['likes_after']);
-            $dt['comment_before'] = intval($query_yesterday['comment_after']);
-            $dt['share_save_before'] = intval($query_yesterday['share_save_after']);
-            $dt['views_before'] = intval($query_yesterday['views_after']);
-
-            if ($v['total_cost'] > 0 && $dt['views_before'] > 0) {
-                $dt['cpm_before'] = doubleval($v['total_cost']) / doubleval($dt['views_before']) * 1000;
-            } else {
-                $dt['cpm_before'] = 0;
-            }
-
-            $dt['brand'] = strval($detail['brand']);
-
-            $dt_tmp = array();
-            foreach ($dt as $kt => $vt) {
-                $dt_tmp[$kt] = strval($vt);
-            }
-            $dt = $dt_tmp;
-
-            if ($query) {
-                $dt['updated_at'] = DATE("Y-m-d H:i:s");
-                $dt['updated_by'] = strval($user['id']);
-                $this->db->update('endorse_logs', $dt, array('id' => $query['id']));
-                $id_parent = $query['id'];
-            } else {
-                $dt['created_at'] = DATE("Y-m-d H:i:s");
-                $dt['created_by'] = strval($user['id']);
-                $this->db->insert('endorse_logs', $dt);
-                $id_parent = $this->db->insert_id();
-            }
-
-            $id_parent = $detail['id_campaign'];
-            $this->update_endorse_parent($id_parent);
+    public function clear_queue()
+    {
+        if (strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+            return $this->send_json_response(['status' => false, 'msg' => 'Method tidak diizinkan.'], 405);
         }
 
-        $msg = 'Refresh data berhasil!';
-        echo $this->template->alert_success($msg);
+        $this->db->query("DELETE FROM endorse_refresh_queue_attempts");
+        $this->db->query("DELETE FROM endorse_refresh_queue");
+
+        return $this->send_json_response([
+            'status' => true,
+            'msg' => 'Semua data antrian berhasil dihapus.'
+        ]);
+    }
+
+    public function get_tiktok_photo_images()
+    {
+        $content_id = trim((string)$this->input->get('content_id'));
+        $url = trim((string)$this->input->get('url'));
+        return $this->send_json_response([
+            'status' => true,
+            'data' => $this->template->get_tiktok_photo_images($content_id, $url)
+        ]);
+    }
+
+    public function get_tiktok_video_play()
+    {
+        $url = trim((string)$this->input->get('url'));
+        return $this->send_json_response([
+            'status' => true,
+            'data' => $this->template->get_tiktok_video_play($url)
+        ]);
     }
 
 
@@ -3341,7 +3265,7 @@ class Endorse extends BaseController
             }
             $list_id = substr($list_id, 0, -1);
 
-            if ($list_apid) {
+            if ($list_id) {
                 $data =  $this->mymodel->selectWithQuery("SELECT *
                 FROM endorse
                 WHERE id IN ($list_id) AND status = 'Aktif' 
@@ -3354,31 +3278,10 @@ class Endorse extends BaseController
                 $list_id = substr($list_id, 0, -1);
             }
             if ($list_id) {
-                $id_campaign = $_POST['id_campaign'];
-                $url = base_url() . '/endorse/sync-all-process?id_campaign=' . $id_campaign . '&mode=refresh_data&ids=' . $list_id;
-                $curl = curl_init();
-
-                // echo '<br>';
-
-                curl_setopt_array($curl, array(
-                    CURLOPT_URL => $url,
-                    CURLOPT_RETURNTRANSFER => true,
-                    CURLOPT_ENCODING => '',
-                    CURLOPT_MAXREDIRS => 10,
-                    CURLOPT_TIMEOUT => 0,
-                    CURLOPT_FOLLOWLOCATION => true,
-                    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-                    CURLOPT_CUSTOMREQUEST => 'POST',
-                    CURLOPT_HTTPHEADER => array(
-                        'Content-Type: application/json'
-                    ),
-                ));
-
-                $response = curl_exec($curl);
-                echo $response;
-                die;
-                // $response = json_decode($response,true);
-                curl_close($curl);
+                $_POST['mode'] = 'refresh_data';
+                $_POST['ids'] = $list_id;
+                $_POST['id'] = $_POST['id_campaign'];
+                return $this->bulk_refresh();
             } else {
                 $msg = 'Pastikan kamu sudah memilih minimal 1 data!';
                 echo $this->template->alert_danger($msg);
