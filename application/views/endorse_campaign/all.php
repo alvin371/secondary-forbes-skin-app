@@ -67,6 +67,7 @@
                         <button class="btn btn-edit-active" type="submit"><i class="bi bi-search fs-16"></i> Cari Data</button>
                     </div>
                     <div class="col-lg-2 text-end">
+                        <a href="#!" onclick="refreshVisibleCampaigns()" class="btn btn-sync px-2 mt-0 me-1"><i class="bi bi-bootstrap-reboot fs-16"></i> Refresh Semua</a>
                         <a href="#!" onclick="create()" class="btn btn-primary px-2 mt-0 ms-1"><i class="bi bi-plus-circle-dotted fs-16"></i> Tambah Data</a>
                     </div>
 
@@ -102,6 +103,41 @@
     </div>
 </div>
 <script>
+    function refreshCampaignQueue(id, silent) {
+        return $.getJSON("<?= base_url() ?>ajax/refresh-campaign-endorses", { id_campaign: id }).done(function(response) {
+            if (!silent) {
+                var message = response && response.msg ? response.msg : 'Refresh campaign dimasukkan ke antrian.';
+                alert(message);
+            }
+        });
+    }
+
+    function refreshVisibleCampaigns() {
+        var ids = [];
+        $("#tbody .card").each(function() {
+            var href = $(this).find('a[href*="endorse?id_campaign="]').first().attr('href') || '';
+            var match = href.match(/id_campaign=(\d+)/);
+            if (match) {
+                ids.push(match[1]);
+            }
+        });
+
+        ids = Array.from(new Set(ids));
+        if (!ids.length) {
+            return;
+        }
+
+        var requests = ids.map(function(id) {
+            return refreshCampaignQueue(id, true);
+        });
+
+        $.when.apply($, requests).done(function() {
+            alert(ids.length + ' campaign diproses ke antrian refresh.');
+        }).fail(function() {
+            alert('Sebagian campaign gagal dimasukkan ke antrian.');
+        });
+    }
+
     function create() {
         $("#load-form").html('Loading...');
         $("#modal-form").modal('show');

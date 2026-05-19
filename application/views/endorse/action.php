@@ -63,6 +63,32 @@
 				form.find(".form-message").slideUp().html("");
 			},
 			success: function(response, textStatus, xhr) {
+				var jsonResponse = null;
+				if (typeof response === 'object' && response !== null) {
+					jsonResponse = response;
+				} else if (typeof response === 'string') {
+					try {
+						jsonResponse = JSON.parse(response);
+					} catch (e) {}
+				}
+
+				if (jsonResponse) {
+					var isSuccess = jsonResponse.status === true;
+					var queueUrl = "<?= base_url() ?>endorse/queue?id_campaign=<?= intval($id_campaign) ?>";
+					var message = jsonResponse.msg || 'Proses selesai.';
+					if (isSuccess && $("input[name='code']").val() === 'refresh_data') {
+						message += ' <a href="' + queueUrl + '">Lihat antrian</a>';
+					}
+					var klass = isSuccess ? 'success' : 'danger';
+					$(".form-message").hide().html('<div class="alert alert-' + klass + '">' + message + '</div>').slideDown("fast");
+					$(".btn-send").removeClass("disabled").html('<?= $btn ?>').attr('disabled', false);
+					if (isSuccess) {
+						setTimeout(function() {
+							window.location.href = "";
+						}, 1800);
+					}
+					return;
+				}
 				var str = response;
 				console.log(str);
 				if (str.indexOf("success") != -1) {

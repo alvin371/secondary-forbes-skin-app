@@ -11,6 +11,17 @@ if ($view == 'table') {
     // TABLE VIEW
     ?>
     <style>
+        .endorse-highlight {
+            animation: endorsePulse 2.4s ease;
+            box-shadow: 0 0 0 3px rgba(255, 214, 80, 0.65), 0 8px 20px rgba(255, 214, 80, 0.18) !important;
+            border-radius: 12px;
+        }
+
+        @keyframes endorsePulse {
+            0% { box-shadow: 0 0 0 0 rgba(255, 214, 80, 0.85); }
+            100% { box-shadow: 0 0 0 12px rgba(255, 214, 80, 0); }
+        }
+
         th.sortable {
             cursor: pointer;
             position: relative;
@@ -299,7 +310,7 @@ if ($view == 'table') {
                         && (int) $v['comment'] === 0
                         && (int) $v['share_save'] === 0;
                 ?>
-                <tr>
+                <tr id="endorse-row-<?= $v['id'] ?>" data-endorse-id="<?= $v['id'] ?>">
                     <!-- <td><?= $k + 1 ?></td> -->
                     <td>
                         <div class="checkbox-wrapper-13 d-inline">
@@ -637,7 +648,7 @@ if ($view == 'table') {
             $display_k = $k;
         }
     ?>
-    <div class="card mb-3" style="padding-bottom:0px">
+    <div class="card mb-3" id="endorse-card-<?= $v['id'] ?>" data-endorse-id="<?= $v['id'] ?>" style="padding-bottom:0px">
         <div class="row">
             <!-- Featured Media Section -->
             <?php if (!empty($v['media_attachment'])): ?>

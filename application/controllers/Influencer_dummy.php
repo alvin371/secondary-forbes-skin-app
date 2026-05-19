@@ -213,7 +213,7 @@ class Influencer_dummy extends CI_Controller {
             if ($type === "Tiktok") {
                 preg_match('/@([a-zA-Z0-9._]+)/', $url, $matches);
                 $username = $matches[1] ?? '';
-                $response = $this->template->get_post_list($type, $update1['account_id']);
+                $response = $this->template->get_post_list($type, $response['data']['username'] ?? $username);
             } else {
                 $response = $this->template->get_post_list($type, $update1['account_id']);
             }
@@ -498,7 +498,8 @@ class Influencer_dummy extends CI_Controller {
         ];
         $this->db->update('influencer_dummy', $update1, ['id' => $id]);
 
-        $response = $this->template->get_post_list($type, $update1['account_id']);
+        $post_account = $type === 'Tiktok' ? strval($response['data']['username'] ?? '') : $update1['account_id'];
+        $response = $this->template->get_post_list($type, $post_account);
 
         if (!$response['status']) {
             echo json_encode([
@@ -590,7 +591,7 @@ class Influencer_dummy extends CI_Controller {
                     preg_match('/@([a-zA-Z0-9_]+)/', $url, $matches);
                     $username = $matches[1] ?? '';
                     if (empty($username)) continue;
-                    $response = $this->template->get_post_list($type, $update1['account_id']);
+                    $response = $this->template->get_post_list($type, $response['data']['username'] ?? $username);
                 } else {
                     $response = $this->template->get_post_list($type, $update1['account_id']);
                 }

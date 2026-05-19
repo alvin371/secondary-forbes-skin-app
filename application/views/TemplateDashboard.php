@@ -1154,6 +1154,10 @@ if (!$_SESSION['is_login']) {
           </div>
           
           <div class="d-flex align-items-center justify-content-end gap-4">
+              <a href="<?= base_url() ?>endorse/queue" class="position-relative text-decoration-none" id="endorseQueueLink" title="Endorse Queue">
+                  <i class="bi bi-hourglass-split" id="endorseQueueIcon" style="font-size: 20px; color: #5a7dbaff;"></i>
+                  <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-primary" id="endorseQueueBadge" style="display: none; font-size: 10px; padding: 3px 5px;">0</span>
+              </a>
               <!-- Notification Bell -->
               <div class="notification-container" style="position: relative; margin-right: 10px;">
                   <button class="p-0" onclick="toggleNotifications()" style="position: relative; background-color: transparent; border: none;">
@@ -1632,6 +1636,8 @@ if (!$_SESSION['is_login']) {
                 console.error('Error loading notification count:', error);
             }
         });
+
+        loadEndorseQueueBadge();
     });
 
     setInterval(function() {
@@ -1652,7 +1658,31 @@ if (!$_SESSION['is_login']) {
               console.error('Error auto-refreshing notification count:', error);
           }
       });
+      loadEndorseQueueBadge();
     }, 30000);
+
+    function loadEndorseQueueBadge() {
+      $.ajax({
+          url: '<?= base_url("endorse/queue-count") ?>',
+          method: 'GET',
+          dataType: 'json',
+          success: function(data) {
+              var count = parseInt(data.count || 0, 10);
+              var stalled = !!data.stalled;
+              var badge = $('#endorseQueueBadge');
+              var icon = $('#endorseQueueIcon');
+
+              if (count > 0) {
+                  badge.text(count).show();
+              } else {
+                  badge.hide();
+              }
+
+              badge.removeClass('bg-primary bg-warning').addClass(stalled ? 'bg-warning' : 'bg-primary');
+              icon.css('color', stalled ? '#c58a00' : '#5a7dbaff');
+          }
+      });
+    }
   </script>
   <script>
     $(document).ready(function() {

@@ -85,6 +85,42 @@ class Ajax extends CI_Controller
 		echo json_encode($html, true);
 	}
 
+	public function refresh_campaign_endorses()
+	{
+		$this->load->database();
+		$this->load->model('mymodel');
+		$this->load->library('endorseRefreshQueueService');
+
+		$id_campaign = intval($this->input->get('id_campaign'));
+		$user_id = intval($_SESSION['user']['id'] ?? 0);
+
+		if ($id_campaign <= 0) {
+			return $this->output
+				->set_status_header(422)
+				->set_content_type('application/json', 'utf-8')
+				->set_output(json_encode([
+					'status' => false,
+					'msg' => 'Campaign tidak valid.',
+					'enqueued' => 0,
+					'skipped_duplicates' => 0,
+					'id_campaign' => $id_campaign
+				]));
+		}
+
+		$queue = $this->endorserefreshqueueservice->enqueueCampaign($id_campaign, $user_id);
+
+		return $this->output
+			->set_content_type('application/json', 'utf-8')
+			->set_output(json_encode([
+				'status' => ($queue['status'] ?? 'error') !== 'error',
+				'msg' => $queue['msg'] ?? 'Gagal membuat antrian refresh.',
+				'enqueued' => intval($queue['enqueued'] ?? 0),
+				'skipped_duplicates' => intval($queue['skipped_duplicates'] ?? 0),
+				'excluded_known_url' => intval($queue['excluded_known_url'] ?? 0),
+				'id_campaign' => $id_campaign
+			]));
+	}
+
 	public function get_chart_campaign()
 	{
 		$is_dashboard = $_GET['is_dashboard'];
