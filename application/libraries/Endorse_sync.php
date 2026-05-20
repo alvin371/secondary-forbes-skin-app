@@ -1,8 +1,21 @@
 <?php
 defined('BASEPATH') or exit('No direct script access allowed');
 
+/**
+ * Endorse_sync — shared per-row sync application logic.
+ *
+ * Used by Endorse::sync_process (per-row UI button) and Api_v2::cronjob_endorse_refresh
+ * (queue worker). Encapsulates: yesterday-stat lookup, endorse + endorse_logs writes,
+ * FYP/CPM derivation, response classification for retry policy, and parent rollup.
+ */
 class Endorse_sync
 {
+    const ERR_OK        = 'ok';
+    const ERR_PERMANENT = 'permanent';
+    const ERR_TRANSIENT = 'transient';
+    const ERR_EMPTY     = 'empty';
+
+    /** @var CI_Controller */
     protected $CI;
 
     public function __construct()
@@ -10,417 +23,416 @@ class Endorse_sync
         $this->CI =& get_instance();
         $this->CI->load->database();
         $this->CI->load->model('mymodel');
-        $this->CI->load->library('template');
     }
 
-    public function classifyError($response, $defaultMessage = 'Gagal mengambil data sosial media.')
+    /**
+     * Classify a Template::get_social_media response for retry decisions.
+     */
+    public function classify_response(array $response, string $platform, string $url): array
     {
-        $message = trim((string) ($response['msg'] ?? $defaultMessage));
-        $normalized = strtolower($message);
-
-        if ($normalized === '') {
-            $message = $defaultMessage;
-            $normalized = strtolower($message);
+        if (!empty($response['status']) && !empty($response['data'])) {
+            $hasMetrics = intval($response['data']['view'] ?? 0) > 0
+                || intval($response['data']['like'] ?? 0) > 0
+                || intval($response['data']['share'] ?? 0) > 0
+                || intval($response['data']['comment'] ?? 0) > 0
+                || intval($response['data']['collect'] ?? 0) > 0;
+            if ($hasMetrics || !empty($response['data']['content_id'])) {
+                return ['class' => self::ERR_OK, 'msg' => ''];
+            }
         }
 
-        $errorClass = 'transient';
-        if (
-            strpos($normalized, 'video id tidak ditemukan') !== false ||
-            strpos($normalized, 'url tidak ditemukan') !== false ||
-            strpos($normalized, 'response tiktok') !== false ||
-            strpos($normalized, 'tidak ditemukan') !== false ||
-            strpos($normalized, 'invalid tiktok url') !== false
-        ) {
-            $errorClass = 'permanent';
+        if (!empty($response['status']) && !empty($response['data']['content_id'])) {
+            return ['class' => self::ERR_OK, 'msg' => ''];
         }
 
-        return [
-            'error_class' => $errorClass,
-            'error_message' => $message,
-        ];
+        $msg = strval($response['msg'] ?? '');
+
+        if ($platform === 'Instagram') {
+            return ['class' => self::ERR_PERMANENT, 'msg' => $msg ?: 'Individual Instagram post scraping belum tersedia'];
+        }
+
+        if (stripos($msg, 'video id tidak ditemukan') !== false
+            || stripos($msg, 'url tidak ditemukan') !== false
+            || stripos($msg, 'platform belum tersedia') !== false) {
+            return ['class' => self::ERR_PERMANENT, 'msg' => $msg];
+        }
+
+        if (stripos($msg, 'stats data tidak ditemukan') !== false) {
+            return ['class' => self::ERR_EMPTY, 'msg' => $msg];
+        }
+
+        // Network/timeout/5xx/rate-limit fall through here — let the queue retry.
+        return ['class' => self::ERR_TRANSIENT, 'msg' => $msg ?: 'Gagal mengambil data sosial media'];
     }
 
-    public function isKnownPermanentFailure($message)
+    /**
+     * Backward-compatible helper for queue enqueue duplicate filtering.
+     */
+    public function isKnownPermanentFailure($message): bool
     {
-        $normalized = strtolower(trim((string) $message));
-        if ($normalized === '') {
+        $msg = strtolower(trim((string) $message));
+        if ($msg === '') {
             return false;
         }
 
-        return strpos($normalized, 'video id tidak ditemukan') !== false
-            || strpos($normalized, 'url tidak ditemukan') !== false
-            || strpos($normalized, 'response tiktok') !== false
-            || strpos($normalized, 'invalid tiktok url') !== false;
+        return strpos($msg, 'video id tidak ditemukan') !== false
+            || strpos($msg, 'url tidak ditemukan') !== false
+            || strpos($msg, 'platform belum tersedia') !== false;
     }
 
-    public function apply(array $endorseRow, array $response, $today = null, $userId = 0)
+    /**
+     * Apply a sync response to one endorse row. Updates `endorse` and `endorse_logs`.
+     * Does NOT roll up to endorse_campaign — caller decides when (per-row vs batched).
+     *
+     * @param array      $endorse     Endorse row (must contain id, id_campaign, influencer, brand, platform,
+     *                                link_upload, total_cost, status, status_campaign).
+     * @param array      $response    Output of Template::get_social_media.
+     * @param int        $user_id     Acting user id.
+     * @param array|null $prev_stats  Optional pre-loaded yesterday log row (likes_after, comment_after,
+     *                                share_save_after, views_after). If null, fetched here.
+     * @return array ['status' => bool, 'error_class' => string, 'msg' => string]
+     */
+    public function apply(array $endorse, array $response, int $user_id, ?array $prev_stats = null): array
     {
-        $today = $today ?: date('Y-m-d');
-        $idEndorse = intval($endorseRow['id'] ?? 0);
-        if ($idEndorse <= 0) {
+        $platform = strval($endorse['platform']);
+        $url = strval($endorse['link_upload']);
+
+        $classification = $this->classify_response($response, $platform, $url);
+
+        if ($classification['class'] !== self::ERR_OK) {
             return [
-                'status' => false,
-                'error_class' => 'permanent',
-                'error_message' => 'Data endorse tidak valid.',
+                'status'      => false,
+                'error_class' => $classification['class'],
+                'msg'         => $classification['msg'],
             ];
         }
 
-        if (($response['status'] ?? false) !== true || !is_array($response['data'] ?? null)) {
-            $error = $this->classifyError($response);
-            return [
-                'status' => false,
-                'error_class' => $error['error_class'],
-                'error_message' => $error['error_message'],
-            ];
+        $db = $this->CI->db;
+        $today = date('Y-m-d');
+        $id_endorse = intval($endorse['id']);
+
+        if ($prev_stats === null) {
+            $prev_stats = $this->load_prev_stats($id_endorse, $today);
         }
 
-        $responseData = $response['data'];
-        $hasStats = intval($responseData['view'] ?? 0) > 0
-            || intval($responseData['like'] ?? 0) > 0
-            || intval($responseData['comment'] ?? 0) > 0
-            || intval($responseData['share'] ?? 0) > 0
-            || intval($responseData['collect'] ?? 0) > 0;
+        $prev_likes      = intval($prev_stats['likes_after'] ?? 0);
+        $prev_comment    = intval($prev_stats['comment_after'] ?? 0);
+        $prev_share_save = intval($prev_stats['share_save_after'] ?? 0);
+        $prev_views      = intval($prev_stats['views_after'] ?? 0);
 
-        if (!$hasStats) {
-            return [
-                'status' => false,
-                'error_class' => 'empty',
-                'error_message' => trim((string) ($response['msg'] ?? 'Data sosial media tidak ditemukan.')),
-            ];
+        $stats = [
+            'likes'      => intval($response['data']['like'] ?? 0),
+            'comment'    => intval($response['data']['comment'] ?? 0),
+            'share_save' => doubleval($response['data']['share'] ?? 0) + doubleval($response['data']['collect'] ?? 0),
+            'views'      => intval($response['data']['view'] ?? 0),
+        ];
+
+        // Keep views non-decreasing per content (TikTok occasionally returns transient lower values).
+        if ($stats['views'] < $prev_views) {
+            $stats['views'] = $prev_views;
         }
 
-        $userId = intval($userId);
-        $totalCost = doubleval($endorseRow['total_cost'] ?? 0);
-        $prev = $this->CI->mymodel->selectWithQuery("SELECT *
-            FROM endorse_logs
-            WHERE id_endorse = '{$idEndorse}' AND date < '{$today}' AND views_after > 0
-            ORDER BY date DESC
-            LIMIT 1");
-        $prev = $prev[0] ?? [];
-
-        $todayLog = $this->CI->mymodel->selectWithQuery("SELECT id
-            FROM endorse_logs
-            WHERE id_endorse = '{$idEndorse}' AND date = '{$today}'
-            LIMIT 1");
-        $todayLog = $todayLog[0] ?? [];
-
-        $prevLikes = intval($prev['likes_after'] ?? 0);
-        $prevComment = intval($prev['comment_after'] ?? 0);
-        $prevShareSave = intval($prev['share_save_after'] ?? 0);
-        $prevViews = intval($prev['views_after'] ?? 0);
-
-        $likesAfter = intval($responseData['like'] ?? 0);
-        $commentAfter = intval($responseData['comment'] ?? 0);
-        $shareAfter = doubleval($responseData['share'] ?? 0) + doubleval($responseData['collect'] ?? 0);
-        $viewsAfter = intval($responseData['view'] ?? 0);
-
-        $isFyp = isset($endorseRow['is_fyp']) ? strval($endorseRow['is_fyp']) : '0';
-        if ($viewsAfter >= 50000) {
-            $idInfluencer = intval($endorseRow['influencer'] ?? 0);
-            if ($idInfluencer > 0) {
-                $creator = $this->CI->mymodel->selectWithQuery("SELECT follower FROM influencer WHERE id = '{$idInfluencer}' LIMIT 1");
-                $follower = intval($creator[0]['follower'] ?? 0);
-                if ($follower > 0) {
-                    $threshold = intval($follower * 30 / 100);
-                    if ($viewsAfter >= $threshold) {
-                        $isFyp = '1';
-                    }
-                } else {
-                    $isFyp = '1';
+        $is_fyp = null;
+        if ($stats['views'] >= 50000) {
+            $follower = $this->lookup_follower(intval($endorse['influencer']));
+            if ($follower > 0) {
+                $batas = intval($follower * 30 / 100);
+                if ($stats['views'] >= $batas) {
+                    $is_fyp = '1';
                 }
             } else {
-                $isFyp = '1';
+                $is_fyp = '1';
             }
         }
 
-        $now = date('Y-m-d H:i:s');
-        $cpmAfter = ($totalCost > 0 && $viewsAfter > 0) ? ($totalCost / $viewsAfter * 1000) : 0;
+        $total_cost = doubleval($endorse['total_cost']);
+        $cpm = ($total_cost > 0 && $stats['views'] > 0)
+            ? ($total_cost / $stats['views'] * 1000)
+            : 0;
 
         $endorseUpdate = [
-            'status' => strval($endorseRow['status'] ?? ''),
-            'status_campaign' => strval($endorseRow['status_campaign'] ?? ''),
-            'likes' => doubleval($likesAfter),
-            'comment' => doubleval($commentAfter),
-            'share_save' => doubleval($shareAfter),
-            'views' => doubleval($viewsAfter),
-            'cpm' => doubleval($cpmAfter),
-            'is_fyp' => strval($isFyp),
-            'sync_at' => $now,
-            'posting_at' => strval($responseData['created_at'] ?? ($endorseRow['posting_at'] ?? '')),
-            'updated_at' => $now,
+            'status'           => strval($endorse['status']),
+            'status_campaign'  => strval($endorse['status_campaign']),
+            'sync_at'          => date('Y-m-d H:i:s'),
+            'likes'            => $stats['likes'],
+            'comment'          => $stats['comment'],
+            'share_save'       => $stats['share_save'],
+            'views'            => $stats['views'],
+            'cpm'              => $cpm,
+            'updated_at'       => date('Y-m-d H:i:s'),
+            'updated_by'       => strval($user_id),
         ];
-        if ($userId > 0) {
-            $endorseUpdate['updated_by'] = strval($userId);
+        if (!empty($response['data']['created_at'])) {
+            $endorseUpdate['posting_at'] = $response['data']['created_at'];
         }
-
-        $this->applyTikTokMetadata($endorseRow, $responseData, $endorseUpdate, $now);
-
-        $likesDelta = $likesAfter - $prevLikes;
-        $commentDelta = $commentAfter - $prevComment;
-        $shareDelta = $shareAfter - $prevShareSave;
-        $viewsDelta = $viewsAfter - $prevViews;
-        $cpmDelta = ($totalCost > 0 && $viewsDelta > 0) ? ($totalCost / $viewsDelta * 1000) : 0;
-        $cpmBefore = ($totalCost > 0 && $prevViews > 0) ? ($totalCost / $prevViews * 1000) : 0;
-
-        $logPayload = [
-            'status' => strval($endorseRow['status'] ?? ''),
-            'status_campaign' => strval($endorseRow['status_campaign'] ?? ''),
-            'id_endorse' => strval($idEndorse),
-            'id_campaign' => strval($endorseRow['id_campaign'] ?? 0),
-            'influencer' => strval($endorseRow['influencer'] ?? ''),
-            'date' => $today,
-            'total_cost' => doubleval($totalCost),
-            'link_upload' => strval($endorseRow['link_upload'] ?? ''),
-            'platform' => strval($endorseRow['platform'] ?? ''),
-            'likes' => doubleval($likesDelta),
-            'comment' => doubleval($commentDelta),
-            'share_save' => doubleval($shareDelta),
-            'views' => doubleval($viewsDelta),
-            'cpm' => doubleval($cpmDelta),
-            'likes_before' => intval($prevLikes),
-            'comment_before' => intval($prevComment),
-            'share_save_before' => intval($prevShareSave),
-            'views_before' => intval($prevViews),
-            'cpm_before' => doubleval($cpmBefore),
-            'likes_after' => intval($likesAfter),
-            'comment_after' => intval($commentAfter),
-            'share_save_after' => intval($shareAfter),
-            'views_after' => intval($viewsAfter),
-            'cpm_after' => doubleval($cpmAfter),
-        ];
-
-        if (!empty($endorseRow['brand'])) {
-            $logPayload['brand'] = strval($endorseRow['brand']);
+        if ($is_fyp !== null) {
+            $endorseUpdate['is_fyp'] = $is_fyp;
         }
-
-        $this->CI->db->trans_start();
-        $this->CI->db->update('endorse', $endorseUpdate, ['id' => $idEndorse]);
-        if (!empty($todayLog['id'])) {
-            $logPayload['updated_at'] = $now;
-            if ($userId > 0) {
-                $logPayload['updated_by'] = strval($userId);
+        if ($platform === 'Tiktok' && $db->field_exists('tiktok_content_id', 'endorse')) {
+            $existingCover = strval($endorse['tiktok_cover'] ?? '');
+            $normalizedCover = strval($response['data']['cover'] ?? '');
+            if ($is_fyp !== null && $existingCover !== '' && !$this->looks_like_url($existingCover)) {
+                $normalizedCover = $existingCover;
             }
-            $this->CI->db->update('endorse_logs', $logPayload, ['id' => intval($todayLog['id'])]);
+
+            $endorseUpdate['tiktok_content_id'] = strval($response['data']['content_id'] ?? '');
+            $endorseUpdate['tiktok_media_type'] = strval($response['data']['media_type'] ?? '');
+            $endorseUpdate['tiktok_cover'] = $normalizedCover;
+            $endorseUpdate['tiktok_content_link'] = strval($response['data']['video_link'] ?? '');
+            $endorseUpdate['tiktok_fetched_at'] = date('Y-m-d H:i:s');
+        }
+
+        $db->update('endorse', $endorseUpdate, ['id' => $id_endorse]);
+
+        // endorse_logs upsert for today.
+        $existing = $this->CI->mymodel->selectWithQuery("
+            SELECT id FROM endorse_logs
+            WHERE id_endorse = '$id_endorse' AND date = '$today'
+            ORDER BY id DESC LIMIT 1
+        ");
+        $existing_log_id = !empty($existing) ? intval($existing[0]['id']) : 0;
+
+        $views_diff      = max(0, $stats['views']      - $prev_views);
+        $likes_diff      = max(0, $stats['likes']      - $prev_likes);
+        $comment_diff    = max(0, $stats['comment']    - $prev_comment);
+        $share_save_diff = max(0, $stats['share_save'] - $prev_share_save);
+
+        $cpm_diff   = ($total_cost > 0 && $views_diff > 0)         ? ($total_cost / $views_diff * 1000)         : 0;
+        $cpm_after  = ($total_cost > 0 && $stats['views'] > 0)     ? ($total_cost / $stats['views'] * 1000)     : 0;
+        $cpm_before = ($total_cost > 0 && $prev_views > 0)         ? ($total_cost / $prev_views * 1000)         : 0;
+
+        $logRow = [
+            'id_endorse'        => strval($id_endorse),
+            'id_campaign'       => strval($endorse['id_campaign']),
+            'influencer'        => strval($endorse['influencer']),
+            'date'              => $today,
+            'status'            => strval($endorse['status']),
+            'status_campaign'   => strval($endorse['status_campaign']),
+            'total_cost'        => strval($total_cost),
+            'link_upload'       => strval($endorse['link_upload']),
+            'platform'          => strval($endorse['platform']),
+            'brand'             => strval($endorse['brand']),
+
+            // Diff (today-vs-yesterday)
+            'likes'             => strval($likes_diff),
+            'comment'           => strval($comment_diff),
+            'share_save'        => strval($share_save_diff),
+            'views'             => strval($views_diff),
+            'cpm'               => strval($cpm_diff),
+
+            // Cumulative current
+            'likes_after'       => strval($stats['likes']),
+            'comment_after'     => strval($stats['comment']),
+            'share_save_after'  => strval($stats['share_save']),
+            'views_after'       => strval($stats['views']),
+            'cpm_after'         => strval($cpm_after),
+
+            // Cumulative prior
+            'likes_before'      => strval($prev_likes),
+            'comment_before'    => strval($prev_comment),
+            'share_save_before' => strval($prev_share_save),
+            'views_before'      => strval($prev_views),
+            'cpm_before'        => strval($cpm_before),
+        ];
+
+        if ($existing_log_id) {
+            $logRow['updated_at'] = date('Y-m-d H:i:s');
+            $logRow['updated_by'] = strval($user_id);
+            $db->update('endorse_logs', $logRow, ['id' => $existing_log_id]);
         } else {
-            $logPayload['created_at'] = $now;
-            if ($userId > 0) {
-                $logPayload['created_by'] = strval($userId);
-            }
-            $this->CI->db->insert('endorse_logs', $logPayload);
-        }
-        $this->CI->db->trans_complete();
-
-        if ($this->CI->db->trans_status() === false) {
-            return [
-                'status' => false,
-                'error_class' => 'transient',
-                'error_message' => 'Gagal menyimpan hasil refresh endorse.',
-            ];
+            $logRow['created_at'] = date('Y-m-d H:i:s');
+            $logRow['created_by'] = strval($user_id);
+            $db->insert('endorse_logs', $logRow);
         }
 
         return [
-            'status' => true,
-            'endorse_update' => $endorseUpdate,
-            'response_data' => $responseData,
+            'status'      => true,
+            'error_class' => self::ERR_OK,
+            'msg'         => 'OK',
         ];
     }
 
-    protected function applyTikTokMetadata(array $endorseRow, array $responseData, array &$endorseUpdate, $fetchedAt)
+    protected function looks_like_url(string $value): bool
     {
-        if (strtolower((string) ($endorseRow['platform'] ?? '')) !== 'tiktok') {
-            return;
-        }
-
-        $currentContentId = trim((string) ($this->CI->template->extract_tiktok_content_id($endorseRow['link_upload'] ?? '') ?? ''));
-        $storedContentId = trim((string) ($endorseRow['tiktok_content_id'] ?? ''));
-        $storedMediaType = trim((string) ($endorseRow['tiktok_media_type'] ?? ''));
-        $storedCover = trim((string) ($endorseRow['tiktok_cover'] ?? ''));
-        $storedContentLink = trim((string) ($endorseRow['tiktok_content_link'] ?? ''));
-        $normalizedContentId = trim((string) ($responseData['content_id'] ?? $currentContentId));
-        $mediaType = trim((string) ($responseData['media_type'] ?? ''));
-        $contentLink = trim((string) ($responseData['video_link'] ?? ''));
-        $cover = trim((string) ($responseData['cover'] ?? ''));
-
-        $shouldRefresh = $storedContentId === ''
-            || $storedMediaType === ''
-            || $storedCover === ''
-            || $storedContentLink === ''
-            || ($currentContentId !== '' && $storedContentId !== '' && $currentContentId !== $storedContentId);
-
-        if (!$shouldRefresh && $normalizedContentId === '' && $mediaType === '' && $contentLink === '' && $cover === '') {
-            return;
-        }
-
-        if ($normalizedContentId !== '') {
-            $endorseUpdate['tiktok_content_id'] = $normalizedContentId;
-        }
-        if ($mediaType !== '') {
-            $endorseUpdate['tiktok_media_type'] = $mediaType;
-        }
-        if ($cover !== '') {
-            $endorseUpdate['tiktok_cover'] = $cover;
-        }
-        if ($contentLink !== '') {
-            $endorseUpdate['tiktok_content_link'] = $contentLink;
-        }
-        if (
-            isset($endorseUpdate['tiktok_content_id']) ||
-            isset($endorseUpdate['tiktok_media_type']) ||
-            isset($endorseUpdate['tiktok_cover']) ||
-            isset($endorseUpdate['tiktok_content_link'])
-        ) {
-            $endorseUpdate['tiktok_fetched_at'] = $fetchedAt;
-        }
+        return stripos($value, 'http://') === 0 || stripos($value, 'https://') === 0;
     }
 
-    public function update_campaign_parent($idParent, $userId = 0)
+    /**
+     * Pre-load yesterday's stats for many endorse rows in one query.
+     * Returns map: id_endorse => row (likes_after, comment_after, share_save_after, views_after).
+     */
+    public function load_prev_stats_batch(array $endorse_ids, string $today): array
     {
-        $idParent = intval($idParent);
-        if ($idParent <= 0) {
-            return false;
+        $endorse_ids = array_filter(array_map('intval', $endorse_ids));
+        if (empty($endorse_ids)) {
+            return [];
         }
 
-        $userId = intval($userId ?: ($_SESSION['user']['id'] ?? 0));
+        $idList = implode(',', $endorse_ids);
+        $rows = $this->CI->mymodel->selectWithQuery("
+            SELECT t.id_endorse, t.likes_after, t.comment_after, t.share_save_after, t.views_after
+            FROM endorse_logs t
+            INNER JOIN (
+                SELECT id_endorse, MAX(date) AS max_date
+                FROM endorse_logs
+                WHERE id_endorse IN ($idList)
+                  AND date < '$today'
+                  AND views_after > 0
+                GROUP BY id_endorse
+            ) m ON m.id_endorse = t.id_endorse AND m.max_date = t.date
+        ");
+
+        $map = [];
+        foreach ($rows as $row) {
+            $map[intval($row['id_endorse'])] = $row;
+        }
+        return $map;
+    }
+
+    /**
+     * Recalculate aggregate counters for an endorse_campaign.
+     * Mirrors the original Endorse::update_endorse_parent logic but takes user_id explicitly.
+     */
+    public function update_campaign_parent(int $id_campaign, int $user_id): void
+    {
+        $db = $this->CI->db;
         $today = date('Y-m-d');
-        $query = $this->CI->mymodel->selectWithQuery("SELECT id
-            FROM endorse_campaign_logs
-            WHERE id_campaign = '{$idParent}' AND date = '{$today}'");
-        $query = $query[0] ?? [];
 
-        $queryYesterday = $this->CI->mymodel->selectWithQuery("SELECT *
-            FROM endorse_campaign_logs
-            WHERE id_campaign = '{$idParent}' AND date < '{$today}'
-            ORDER BY date DESC
-            LIMIT 1");
-        $queryYesterday = $queryYesterday[0] ?? [];
+        $existing = $this->CI->mymodel->selectWithQuery("
+            SELECT id FROM endorse_campaign_logs
+            WHERE id_campaign = '$id_campaign' AND date = '$today'
+        ");
+        $existing_id = !empty($existing) ? intval($existing[0]['id']) : 0;
 
-        $itemDetail = $this->CI->mymodel->selectWithQuery("SELECT
-            SUM(total_cost) as total_cost,
-            COUNT(id) as count_endorse,
-            SUM(likes) as likes,
-            SUM(comment) as comment,
-            SUM(share_save) as share_save,
-            SUM(views) as views,
-            AVG(cpm) as cpm
+        $yesterday = $this->CI->mymodel->selectWithQuery("
+            SELECT * FROM endorse_campaign_logs
+            WHERE id_campaign = '$id_campaign' AND date < '$today'
+            ORDER BY date DESC LIMIT 1
+        ");
+        $yesterday = !empty($yesterday) ? $yesterday[0] : [];
+
+        $totals = $this->CI->mymodel->selectWithQuery("
+            SELECT SUM(total_cost) as total_cost, COUNT(id) as count_endorse,
+                   SUM(likes) as likes, SUM(comment) as comment,
+                   SUM(share_save) as share_save, SUM(views) as views, AVG(cpm) as cpm
             FROM endorse
-            WHERE id_campaign = '{$idParent}' AND link_upload != '' AND status = 'Aktif'");
-        $itemDetail = $itemDetail[0] ?? [];
+            WHERE id_campaign = '$id_campaign' AND link_upload != '' AND status = 'Aktif'
+        ");
+        $totals = $totals[0];
 
-        $item = $this->CI->mymodel->selectWithQuery("SELECT
-            SUM(likes) as likes,
-            SUM(comment) as comment,
-            SUM(share_save) as share_save,
-            SUM(views) as views,
-            AVG(cpm) as cpm,
-            SUM(likes_after) as likes_after,
-            SUM(comment_after) as comment_after,
-            SUM(share_save_after) as share_save_after,
-            SUM(views_after) as views_after,
-            AVG(cpm_after) as cpm_after,
-            SUM(likes_before) as likes_before,
-            SUM(comment_before) as comment_before,
-            SUM(share_save_before) as share_save_before,
-            SUM(views_before) as views_before,
-            AVG(cpm_before) as cpm_before
+        $logTotals = $this->CI->mymodel->selectWithQuery("
+            SELECT SUM(likes) as likes, SUM(comment) as comment, SUM(share_save) as share_save,
+                   SUM(views) as views, AVG(cpm) as cpm,
+                   SUM(likes_after) as likes_after, SUM(comment_after) as comment_after,
+                   SUM(share_save_after) as share_save_after, SUM(views_after) as views_after,
+                   AVG(cpm_after) as cpm_after,
+                   SUM(likes_before) as likes_before, SUM(comment_before) as comment_before,
+                   SUM(share_save_before) as share_save_before, SUM(views_before) as views_before,
+                   AVG(cpm_before) as cpm_before
             FROM endorse_logs
-            WHERE id_campaign = '{$idParent}'");
-        $item = $item[0] ?? [];
+            WHERE id_campaign = '$id_campaign'
+        ");
+        $logTotals = $logTotals[0];
 
-        $dt = [
-            'id_campaign' => $idParent,
-            'total_cost' => doubleval($itemDetail['total_cost'] ?? 0),
-            'date' => $today,
+        $count_total      = $this->count_endorse($id_campaign, '');
+        $count_active     = $this->count_endorse($id_campaign, "AND status = 'Aktif'");
+        $count_processed  = $this->count_endorse($id_campaign, "AND status = 'Aktif' AND link_upload != ''");
+        $count_inf_total  = $this->count_distinct_influencer($id_campaign, '');
+        $count_inf_active = $this->count_distinct_influencer($id_campaign, "AND status = 'Aktif'");
+        $count_inf_proc   = $this->count_distinct_influencer($id_campaign, "AND status = 'Aktif' AND link_upload != ''");
+
+        $logRow = [
+            'id_campaign'   => strval($id_campaign),
+            'total_cost'    => strval(doubleval($totals['total_cost'])),
+            'date'          => $today,
         ];
-        foreach ($item as $key => $value) {
-            $dt[$key] = doubleval($value);
+        foreach ($logTotals as $k => $v) {
+            $logRow[$k] = strval(doubleval($v));
         }
 
-        $dtt = [];
-        foreach ($itemDetail as $key => $value) {
-            $dtt[$key] = doubleval($value);
-        }
+        $logRow['ce_now']             = strval($count_total);
+        $logRow['ce_active_now']      = strval($count_active);
+        $logRow['ce_processed_now']   = strval($count_processed);
+        $logRow['ci_now']             = strval($count_inf_total);
+        $logRow['ci_active_now']      = strval($count_inf_active);
+        $logRow['ci_processed_now']   = strval($count_inf_proc);
 
-        $summary = $this->CI->mymodel->selectWithQuery("SELECT COUNT(id) as count FROM endorse WHERE id_campaign = '{$idParent}'");
-        $dtt['count_endorse'] = intval($summary[0]['count'] ?? 0);
-        $dt['ce_now'] = $dtt['count_endorse'];
+        $logRow['ce_before']           = strval(intval($yesterday['ce_now'] ?? 0));
+        $logRow['ce_active_before']    = strval(intval($yesterday['ce_active_now'] ?? 0));
+        $logRow['ce_processed_before'] = strval(intval($yesterday['ce_processed_now'] ?? 0));
+        $logRow['ci_before']           = strval(intval($yesterday['ci_now'] ?? 0));
+        $logRow['ci_active_before']    = strval(intval($yesterday['ci_active_now'] ?? 0));
+        $logRow['ci_processed_before'] = strval(intval($yesterday['ci_processed_now'] ?? 0));
 
-        $summary = $this->CI->mymodel->selectWithQuery("SELECT COUNT(id) as count FROM endorse WHERE id_campaign = '{$idParent}' AND status = 'Aktif'");
-        $dtt['count_endorse_active'] = intval($summary[0]['count'] ?? 0);
-        $dt['ce_active_now'] = $dtt['count_endorse_active'];
+        $logRow['ce_after']           = strval($count_total);
+        $logRow['ce_active_after']    = strval($count_active);
+        $logRow['ce_processed_after'] = strval($count_processed);
+        $logRow['ci_after']           = strval($count_inf_total);
+        $logRow['ci_active_after']    = strval($count_inf_active);
+        $logRow['ci_processed_after'] = strval($count_inf_proc);
 
-        $summary = $this->CI->mymodel->selectWithQuery("SELECT COUNT(id) as count FROM endorse WHERE id_campaign = '{$idParent}' AND status = 'Aktif' AND link_upload != ''");
-        $dtt['count_endorse_processed'] = intval($summary[0]['count'] ?? 0);
-        $dt['ce_processed_now'] = $dtt['count_endorse_processed'];
-
-        $summary = $this->CI->mymodel->selectWithQuery("SELECT COUNT(DISTINCT influencer) as count FROM endorse WHERE id_campaign = '{$idParent}'");
-        $dtt['count_influencer'] = intval($summary[0]['count'] ?? 0);
-        $dt['ci_now'] = $dtt['count_influencer'];
-
-        $summary = $this->CI->mymodel->selectWithQuery("SELECT COUNT(DISTINCT influencer) as count FROM endorse WHERE id_campaign = '{$idParent}' AND status = 'Aktif'");
-        $dtt['count_influencer_active'] = intval($summary[0]['count'] ?? 0);
-        $dt['ci_active_now'] = $dtt['count_influencer_active'];
-
-        $summary = $this->CI->mymodel->selectWithQuery("SELECT COUNT(DISTINCT influencer) as count FROM endorse WHERE id_campaign = '{$idParent}' AND status = 'Aktif' AND link_upload != ''");
-        $dtt['count_influencer_processed'] = intval($summary[0]['count'] ?? 0);
-        $dt['ci_processed_now'] = $dtt['count_influencer_processed'];
-
-        $dt['ci_before'] = doubleval($queryYesterday['ci_now'] ?? 0);
-        $dt['ci_active_before'] = doubleval($queryYesterday['ci_active_now'] ?? 0);
-        $dt['ci_processed_before'] = doubleval($queryYesterday['ci_processed_now'] ?? 0);
-        $dt['ce_before'] = doubleval($queryYesterday['ce_now'] ?? 0);
-        $dt['ce_active_before'] = doubleval($queryYesterday['ce_active_now'] ?? 0);
-        $dt['ce_processed_before'] = doubleval($queryYesterday['ce_processed_now'] ?? 0);
-
-        $dt['ci_after'] = $dt['ci_now'];
-        $dt['ci_active_after'] = $dt['ci_active_now'];
-        $dt['ci_processed_after'] = $dt['ci_processed_now'];
-        $dt['ce_after'] = $dt['ce_now'];
-        $dt['ce_active_after'] = $dt['ce_active_now'];
-        $dt['ce_processed_after'] = $dt['ce_processed_now'];
-
-        $dt['ci_now'] = $dt['ci_after'] - $dt['ci_before'];
-        $dt['ci_active_now'] = $dt['ci_active_after'] - $dt['ci_active_before'];
-        $dt['ci_processed_now'] = $dt['ci_processed_after'] - $dt['ci_processed_before'];
-        $dt['ce_now'] = $dt['ce_after'] - $dt['ce_before'];
-        $dt['ce_active_now'] = $dt['ce_active_after'] - $dt['ce_active_before'];
-        $dt['ce_processed_now'] = $dt['ce_processed_after'] - $dt['ce_processed_before'];
-
-        $campaign = $this->CI->mymodel->selectDataOne('endorse_campaign', ['id' => $idParent]);
-        if (!empty($campaign['brand'])) {
-            $dt['brand'] = strval($campaign['brand']);
-        }
-
-        $dtTmp = [];
-        foreach ($dt as $key => $value) {
-            $dtTmp[$key] = strval($value);
-        }
-        $dt = $dtTmp;
-
-        if (!empty($query['id'])) {
-            $dt['updated_at'] = date('Y-m-d H:i:s');
-            if ($userId > 0) {
-                $dt['updated_by'] = strval($userId);
-            }
-            $this->CI->db->update('endorse_campaign_logs', $dt, ['id' => intval($query['id'])]);
+        if ($existing_id) {
+            $logRow['updated_at'] = date('Y-m-d H:i:s');
+            $logRow['updated_by'] = strval($user_id);
+            $db->update('endorse_campaign_logs', $logRow, ['id' => $existing_id]);
         } else {
-            $dt['created_at'] = date('Y-m-d H:i:s');
-            if ($userId > 0) {
-                $dt['created_by'] = strval($userId);
-            }
-            $this->CI->db->insert('endorse_campaign_logs', $dt);
+            $logRow['created_at'] = date('Y-m-d H:i:s');
+            $logRow['created_by'] = strval($user_id);
+            $db->insert('endorse_campaign_logs', $logRow);
         }
 
-        $dttTmp = [];
-        foreach ($dtt as $key => $value) {
-            $dttTmp[$key] = strval($value);
-        }
-        $dtt = $dttTmp;
-        $dtt['updated_at'] = date('Y-m-d H:i:s');
-        if ($userId > 0) {
-            $dtt['updated_by'] = strval($userId);
-        }
+        $campaignUpdate = [
+            'total_cost'                 => strval(doubleval($totals['total_cost'])),
+            'count_endorse'              => strval($count_total),
+            'count_endorse_active'       => strval($count_active),
+            'count_endorse_processed'    => strval($count_processed),
+            'count_influencer'           => strval($count_inf_total),
+            'count_influencer_active'    => strval($count_inf_active),
+            'count_influencer_processed' => strval($count_inf_proc),
+            'likes'                      => strval(doubleval($totals['likes'])),
+            'comment'                    => strval(doubleval($totals['comment'])),
+            'share_save'                 => strval(doubleval($totals['share_save'])),
+            'views'                      => strval(doubleval($totals['views'])),
+            'cpm'                        => strval(doubleval($totals['cpm'])),
+            'updated_at'                 => date('Y-m-d H:i:s'),
+            'updated_by'                 => strval($user_id),
+        ];
+        $db->update('endorse_campaign', $campaignUpdate, ['id' => $id_campaign]);
+    }
 
-        $this->CI->db->update('endorse_campaign', $dtt, ['id' => $idParent]);
-        return true;
+    private function load_prev_stats(int $id_endorse, string $today): array
+    {
+        $rows = $this->CI->mymodel->selectWithQuery("
+            SELECT likes_after, comment_after, share_save_after, views_after
+            FROM endorse_logs
+            WHERE id_endorse = '$id_endorse' AND date < '$today' AND views_after > 0
+            ORDER BY date DESC LIMIT 1
+        ");
+        return !empty($rows) ? $rows[0] : [];
+    }
+
+    private function lookup_follower(int $id_influencer): int
+    {
+        if ($id_influencer <= 0) {
+            return 0;
+        }
+        $rows = $this->CI->mymodel->selectWithQuery("SELECT follower FROM influencer WHERE id = '$id_influencer'");
+        return !empty($rows) ? intval($rows[0]['follower']) : 0;
+    }
+
+    private function count_endorse(int $id_campaign, string $extraWhere): int
+    {
+        $rows = $this->CI->mymodel->selectWithQuery("
+            SELECT COUNT(id) as c FROM endorse WHERE id_campaign = '$id_campaign' $extraWhere
+        ");
+        return !empty($rows) ? intval($rows[0]['c']) : 0;
+    }
+
+    private function count_distinct_influencer(int $id_campaign, string $extraWhere): int
+    {
+        $rows = $this->CI->mymodel->selectWithQuery("
+            SELECT COUNT(DISTINCT influencer) as c FROM endorse WHERE id_campaign = '$id_campaign' $extraWhere
+        ");
+        return !empty($rows) ? intval($rows[0]['c']) : 0;
     }
 }

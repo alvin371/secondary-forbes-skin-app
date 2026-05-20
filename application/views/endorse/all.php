@@ -1350,7 +1350,31 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
         }
 
         function sync_all(id) {
-            showModal('Refresh Data', `<?= base_url() ?>/endorse/sync_all?id=${id}`);
+            if (!confirm('Refresh semua konten aktif di campaign ini? Proses berjalan di latar belakang lewat antrian.')) return;
+            $.ajax({
+                url: '<?= base_url() ?>endorse/bulk-refresh',
+                method: 'POST',
+                data: { id_campaign: id },
+                dataType: 'json',
+                success: function(resp) {
+                    const queueUrl = '<?= base_url() ?>endorse/queue?id_campaign=' + id;
+                    if (resp && resp.status) {
+                        const msg = resp.msg || ('Antrian dibuat: ' + resp.enqueued + ' baru, ' + resp.skipped_duplicates + ' sudah ada.');
+                        if (typeof toastr !== 'undefined') {
+                            toastr.success(msg + ' <a href="' + queueUrl + '" class="text-white text-underline"><b>Lihat antrian →</b></a>', '', { timeOut: 7000, escapeHtml: false });
+                        } else {
+                            if (confirm(msg + '\n\nBuka halaman antrian sekarang?')) window.location.href = queueUrl;
+                        }
+                    } else {
+                        const errMsg = (resp && resp.msg) ? resp.msg : 'Gagal membuat antrian refresh.';
+                        if (typeof toastr !== 'undefined') toastr.error(errMsg);
+                        else alert(errMsg);
+                    }
+                },
+                error: function() {
+                    alert('Gagal menghubungi server.');
+                }
+            });
         }
 
         function sync(id) {

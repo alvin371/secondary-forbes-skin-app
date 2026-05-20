@@ -62,7 +62,7 @@ foreach ($data as $v) {
                 <?php } ?>
             </div>
             <div class="col-lg-4 text-lg-end text-start">
-                <a href="#!" onclick="refreshCampaignQueue('<?= $v['id'] ?>')" class="btn btn-sync mt-0 mb-2"><i class="bi bi-bootstrap-reboot fs-16"></i> Refresh</a>
+                <a href="#!" id="refresh-btn-<?= $v['id'] ?>" onclick="refreshCampaign('<?= $v['id'] ?>')" class="btn btn-sync mt-0 mb-2"><i class="bi bi-bootstrap-reboot fs-16"></i> Refresh</a>
                 <a href="#!" onclick="remove('<?= $v['id'] ?>')" class="btn btn-delete  mt-0 mb-2"><i class="bi bi-trash fs-16"></i> Delete Data</a>
                 <a href="#!" onclick="edit('<?= $v['id'] ?>')" class="btn btn-edit  mt-0 ms-1 mb-2"><i class="bi bi-pencil-square fs-16"></i> Edit Data</a>
             </div>

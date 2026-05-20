@@ -55,259 +55,211 @@ class Api_v2 extends CI_Controller
 
     public function cronjob_endorse_refresh()
     {
-        $this->load->database();
+        header('Content-Type: application/json; charset=utf-8');
+        @set_time_limit(55);
+
+        $BATCH_SIZE    = 30;
+        $PARALLEL_HTTP = 10;
+        $STALE_MINUTES = 5;
+
         $this->load->model('mymodel');
         $this->load->library('template');
         $this->load->library('endorse_sync');
 
-        $now = DATE('Y-m-d H:i:s');
-        $worker_id = 'w_' . str_replace('.', '_', uniqid('', true));
-        $batch_size = 30;
-        $stale_before = DATE('Y-m-d H:i:s', strtotime('-5 minutes'));
+        $worker_id = uniqid('w_', true);
+        $now       = date('Y-m-d H:i:s');
+        $today     = date('Y-m-d');
 
-        $this->db->query("UPDATE endorse_refresh_queue_attempts
-            SET status = 'retrying', finished_at = '$now'
-            WHERE status = 'processing'
-              AND started_at IS NOT NULL
-              AND started_at <= '$stale_before'");
-
-        $this->db->query("UPDATE endorse_refresh_queue
-            SET status = 'pending',
-                worker_id = NULL,
-                claimed_at = NULL
-            WHERE status = 'processing'
-              AND started_at IS NOT NULL
-              AND started_at <= '$stale_before'");
-
-        $rows = $this->mymodel->selectWithQuery("SELECT
-                q.id AS queue_id,
-                q.id_endorse AS queue_id_endorse,
-                q.id_campaign AS queue_id_campaign,
-                q.platform AS queue_platform,
-                q.link_upload AS queue_link_upload,
-                q.status AS queue_status,
-                q.priority,
-                q.attempts AS queue_attempts,
-                q.max_attempts,
-                q.error_message AS queue_error_message,
-                q.worker_id AS queue_worker_id,
-                q.claimed_at,
-                q.enqueued_by,
-                q.retry_source_id,
-                q.created_at AS queue_created_at,
-                q.started_at AS queue_started_at,
-                q.completed_at AS queue_completed_at,
-                e.*
-            FROM endorse_refresh_queue q
-            JOIN endorse e ON e.id = q.id_endorse
-            WHERE q.status = 'pending'
-            ORDER BY q.priority DESC, q.id ASC
-            LIMIT $batch_size");
-
-        if (empty($rows)) {
-            return $this->output
-                ->set_content_type('application/json')
-                ->set_output(json_encode([
-                    'status' => true,
-                    'msg' => 'Tidak ada antrian pending.',
-                    'worker_id' => $worker_id,
-                    'processed' => 0
-                ]));
-        }
-
-        $queue_ids = [];
-        $batch_items = [];
-        $row_map = [];
-        foreach ($rows as $row) {
-            $queue_id = intval($row['queue_id'] ?? 0);
-            if ($queue_id <= 0) {
-                continue;
-            }
-            $queue_ids[] = $queue_id;
-            $row_map[$queue_id] = $row;
-            $batch_items[] = [
-                'platform' => $row['queue_platform'],
-                'url' => $row['queue_link_upload'],
-                'fetch_media_assets' => true,
-                'influencer_id' => intval($row['influencer'] ?? 0)
-            ];
-        }
-
-        if (empty($queue_ids)) {
-            return $this->output
-                ->set_content_type('application/json')
-                ->set_output(json_encode([
-                    'status' => true,
-                    'msg' => 'Tidak ada row yang valid untuk diproses.',
-                    'worker_id' => $worker_id,
-                    'processed' => 0
-                ]));
-        }
-
-        $id_list = implode(',', $queue_ids);
-        $this->db->query("UPDATE endorse_refresh_queue
-            SET status = 'processing',
-                worker_id = " . $this->db->escape($worker_id) . ",
-                claimed_at = '$now',
-                started_at = '$now'
-            WHERE id IN ($id_list)
-              AND status = 'pending'");
-
-        $claimed_rows = $this->mymodel->selectWithQuery("SELECT
-                q.id AS queue_id,
-                q.id_endorse AS queue_id_endorse,
-                q.id_campaign AS queue_id_campaign,
-                q.platform AS queue_platform,
-                q.link_upload AS queue_link_upload,
-                q.status AS queue_status,
-                q.priority,
-                q.attempts AS queue_attempts,
-                q.max_attempts,
-                q.error_message AS queue_error_message,
-                q.worker_id AS queue_worker_id,
-                q.claimed_at,
-                q.enqueued_by,
-                q.retry_source_id,
-                q.created_at AS queue_created_at,
-                q.started_at AS queue_started_at,
-                q.completed_at AS queue_completed_at,
-                e.*
-            FROM endorse_refresh_queue q
-            JOIN endorse e ON e.id = q.id_endorse
-            WHERE q.id IN ($id_list)
+        $this->db->query("
+            UPDATE endorse_refresh_queue_attempts a
+            INNER JOIN endorse_refresh_queue q ON q.id = a.queue_id
+            SET a.status = 'retrying',
+                a.error_class = 'transient',
+                a.error_message = 'Worker stalled; item returned to pending queue',
+                a.finished_at = '$now'
+            WHERE a.status = 'processing'
               AND q.status = 'processing'
-              AND q.worker_id = " . $this->db->escape($worker_id) . "
-            ORDER BY q.id ASC");
+              AND q.started_at < (NOW() - INTERVAL $STALE_MINUTES MINUTE)
+        ");
+        $this->db->query("
+            UPDATE endorse_refresh_queue
+            SET status = 'pending', worker_id = NULL, started_at = NULL, claimed_at = NULL
+            WHERE status = 'processing'
+              AND started_at < (NOW() - INTERVAL $STALE_MINUTES MINUTE)
+        ");
 
-        $queue_ids = [];
-        $batch_items = [];
-        $row_map = [];
-        foreach ($claimed_rows as $row) {
-            $queue_id = intval($row['queue_id'] ?? 0);
-            if ($queue_id <= 0) {
-                continue;
-            }
-            $queue_ids[] = $queue_id;
-            $row_map[$queue_id] = $row;
-            $batch_items[] = [
-                'platform' => $row['queue_platform'],
-                'url' => $row['queue_link_upload'],
-                'fetch_media_assets' => true,
-                'influencer_id' => intval($row['influencer'] ?? 0)
-            ];
+        $this->db->query("
+            UPDATE endorse_refresh_queue
+            SET status = 'processing', worker_id = '$worker_id', claimed_at = '$now', started_at = '$now'
+            WHERE status = 'pending' AND worker_id IS NULL
+            ORDER BY priority DESC, created_at ASC
+            LIMIT $BATCH_SIZE
+        ");
+        $claimed_count = $this->db->affected_rows();
+
+        if ($claimed_count <= 0) {
+            echo json_encode([
+                'status'    => true,
+                'worker'    => $worker_id,
+                'processed' => 0,
+                'msg'       => 'No pending endorse refresh items',
+            ]);
+            die;
         }
 
-        if (empty($queue_ids)) {
-            return $this->output
-                ->set_content_type('application/json')
-                ->set_output(json_encode([
-                    'status' => true,
-                    'msg' => 'Tidak ada row yang berhasil di-claim.',
-                    'worker_id' => $worker_id,
-                    'processed' => 0
-                ]));
-        }
-
-        $touched_campaigns = [];
-        $attempt_ids = [];
-        foreach ($queue_ids as $queue_id) {
-            $attempt_no_row = $this->mymodel->selectWithQuery("SELECT COALESCE(MAX(attempt_no), 0) + 1 AS attempt_no
-                FROM endorse_refresh_queue_attempts
-                WHERE queue_id = '$queue_id'");
-            $attempt_no = intval($attempt_no_row[0]['attempt_no'] ?? 1);
-            $this->db->insert('endorse_refresh_queue_attempts', [
-                'queue_id' => $queue_id,
-                'attempt_no' => $attempt_no,
+        $items = $this->mymodel->selectWithQuery("
+            SELECT * FROM endorse_refresh_queue
+            WHERE worker_id = '$worker_id' AND status = 'processing'
+        ");
+        $attemptRows = [];
+        foreach ($items as $item) {
+            $attemptRows[] = [
+                'queue_id' => intval($item['id']),
+                'attempt_no' => intval($item['attempts']) + 1,
                 'worker_id' => $worker_id,
                 'status' => 'processing',
-                'error_class' => null,
-                'error_message' => null,
                 'started_at' => $now,
-                'finished_at' => null,
-                'created_at' => $now
-            ]);
-            $attempt_ids[$queue_id] = intval($this->db->insert_id());
+                'created_at' => $now,
+            ];
+        }
+        if (!empty($attemptRows)) {
+            $this->db->insert_batch('endorse_refresh_queue_attempts', $attemptRows);
         }
 
-        $responses = $this->template->get_social_media_batch($batch_items);
-        $processed = 0;
+        $endorse_ids = array_map(function ($r) {
+            return intval($r['id_endorse']);
+        }, $items);
 
-        foreach ($queue_ids as $index => $queue_id) {
-            $queue_row = $row_map[$queue_id] ?? [];
-            if (empty($queue_row)) {
+        $endorse_id_list = implode(',', $endorse_ids);
+        $endorseRows = $this->mymodel->selectWithQuery("
+            SELECT * FROM endorse WHERE id IN ($endorse_id_list)
+        ");
+        $endorseMap = [];
+        foreach ($endorseRows as $r) {
+            $endorseMap[intval($r['id'])] = $r;
+        }
+
+        $prevStatsMap = $this->endorse_sync->load_prev_stats_batch($endorse_ids, $today);
+
+        $tasks = [];
+        foreach ($items as $i => $item) {
+            $tasks[$i] = ['platform' => $item['platform'], 'url' => $item['link_upload']];
+        }
+        $responses = $this->template->get_social_media_batch($tasks, $PARALLEL_HTTP);
+
+        $completed = 0;
+        $failed = 0;
+        $retrying = 0;
+        $touched_campaigns = [];
+
+        foreach ($items as $i => $item) {
+            $queue_id    = intval($item['id']);
+            $id_endorse  = intval($item['id_endorse']);
+            $endorse     = $endorseMap[$id_endorse] ?? null;
+            $attempts    = intval($item['attempts']) + 1;
+            $maxAttempts = intval($item['max_attempts']);
+            $response    = $responses[$i] ?? ['status' => false, 'msg' => 'No response', 'data' => []];
+
+            if (!$endorse) {
+                $this->mark_queue_failed($queue_id, $attempts, 'Endorse row no longer exists', Endorse_sync::ERR_PERMANENT, $worker_id);
+                $failed++;
                 continue;
             }
 
-            $response = $responses[$index] ?? [
-                'status' => false,
-                'msg' => 'Gagal mengambil data sosial media.'
-            ];
+            $result = $this->endorse_sync->apply(
+                $endorse,
+                $response,
+                intval($item['enqueued_by'] ?: 0),
+                $prevStatsMap[$id_endorse] ?? null
+            );
 
-            $result = $this->endorse_sync->apply($queue_row, $response, DATE('Y-m-d'), 0);
-            $attempt_id = intval($attempt_ids[$queue_id] ?? 0);
-            $attempts = intval($queue_row['queue_attempts'] ?? 0) + 1;
-            $max_attempts = max(1, intval($queue_row['max_attempts'] ?? 3));
-            $finished_at = DATE('Y-m-d H:i:s');
-
-            if (!empty($result['status'])) {
+            if ($result['status']) {
+                $completedAt = date('Y-m-d H:i:s');
                 $this->db->update('endorse_refresh_queue', [
-                    'status' => 'completed',
-                    'attempts' => $attempts,
+                    'status'        => 'completed',
+                    'attempts'      => $attempts,
                     'error_message' => null,
-                    'completed_at' => $finished_at
+                    'worker_id'     => null,
+                    'completed_at'  => $completedAt,
                 ], ['id' => $queue_id]);
-
-                if ($attempt_id > 0) {
-                    $this->db->update('endorse_refresh_queue_attempts', [
-                        'status' => 'completed',
-                        'finished_at' => $finished_at
-                    ], ['id' => $attempt_id]);
-                }
-
-                $touched_campaigns[intval($queue_row['queue_id_campaign'] ?? 0)] = intval($queue_row['queue_id_campaign'] ?? 0);
-                $processed++;
+                $this->finalize_queue_attempt($queue_id, $attempts, $worker_id, 'completed', null, null, $completedAt);
+                $touched_campaigns[intval($endorse['id_campaign'])] = true;
+                $completed++;
                 continue;
             }
 
-            $error_class = strval($result['error_class'] ?? 'transient');
-            $error_message = strval($result['error_message'] ?? 'Gagal mengambil data sosial media.');
-            $queue_status = ($error_class === 'transient' && $attempts < $max_attempts) ? 'pending' : 'failed';
-            $attempt_status = ($queue_status === 'pending') ? 'retrying' : 'failed';
+            $errorClass = $result['error_class'] ?? Endorse_sync::ERR_TRANSIENT;
+            $msg = $result['msg'] ?: 'Gagal';
 
-            $update_queue = [
-                'status' => $queue_status,
-                'attempts' => $attempts,
-                'error_message' => $error_message,
-                'completed_at' => $queue_status === 'failed' ? $finished_at : null,
-                'worker_id' => $queue_status === 'pending' ? null : $worker_id,
-                'claimed_at' => $queue_status === 'pending' ? null : $queue_row['claimed_at']
-            ];
-            $this->db->update('endorse_refresh_queue', $update_queue, ['id' => $queue_id]);
+            if ($errorClass === Endorse_sync::ERR_PERMANENT || $errorClass === Endorse_sync::ERR_EMPTY) {
+                $this->mark_queue_failed($queue_id, $attempts, $msg, $errorClass, $worker_id);
+                $failed++;
+                continue;
+            }
 
-            if ($attempt_id > 0) {
-                $this->db->update('endorse_refresh_queue_attempts', [
-                    'status' => $attempt_status,
-                    'error_class' => $error_class,
-                    'error_message' => $error_message,
-                    'finished_at' => $finished_at
-                ], ['id' => $attempt_id]);
+            if ($attempts >= $maxAttempts) {
+                $this->mark_queue_failed($queue_id, $attempts, "$msg (after $attempts attempts)", $errorClass, $worker_id);
+                $failed++;
+            } else {
+                $finishedAt = date('Y-m-d H:i:s');
+                $this->db->update('endorse_refresh_queue', [
+                    'status'        => 'pending',
+                    'attempts'      => $attempts,
+                    'error_message' => $msg,
+                    'worker_id'     => null,
+                    'started_at'    => null,
+                    'claimed_at'    => null,
+                ], ['id' => $queue_id]);
+                $this->finalize_queue_attempt($queue_id, $attempts, $worker_id, 'retrying', $errorClass, $msg, $finishedAt);
+                $retrying++;
             }
         }
 
-        foreach ($touched_campaigns as $campaign_id) {
-            if ($campaign_id > 0) {
-                $this->endorse_sync->update_campaign_parent($campaign_id, 0);
-            }
+        foreach (array_keys($touched_campaigns) as $cid) {
+            $this->endorse_sync->update_campaign_parent($cid, 0);
         }
 
-        return $this->output
-            ->set_content_type('application/json')
-            ->set_output(json_encode([
-                'status' => true,
-                'msg' => 'Worker endorse refresh selesai.',
-                'worker_id' => $worker_id,
-                'processed' => $processed
-            ]));
+        echo json_encode([
+            'status'    => true,
+            'worker'    => $worker_id,
+            'processed' => count($items),
+            'completed' => $completed,
+            'failed'    => $failed,
+            'retrying'  => $retrying,
+            'msg'       => count($items) . " items: $completed ok, $failed failed, $retrying retrying",
+        ]);
+        die;
+    }
+
+    private function mark_queue_failed(int $queue_id, int $attempts, string $msg, ?string $errorClass = null, ?string $worker_id = null): void
+    {
+        $completedAt = date('Y-m-d H:i:s');
+        $this->db->update('endorse_refresh_queue', [
+            'status'        => 'failed',
+            'attempts'      => $attempts,
+            'error_message' => $msg,
+            'worker_id'     => null,
+            'completed_at'  => $completedAt,
+        ], ['id' => $queue_id]);
+        $this->finalize_queue_attempt($queue_id, $attempts, $worker_id, 'failed', $errorClass, $msg, $completedAt);
+    }
+
+    private function finalize_queue_attempt(int $queue_id, int $attemptNo, ?string $worker_id, string $status, ?string $errorClass, ?string $msg, string $finishedAt): void
+    {
+        $where = [
+            'queue_id' => $queue_id,
+            'attempt_no' => $attemptNo,
+        ];
+        if (!empty($worker_id)) {
+            $where['worker_id'] = $worker_id;
+        }
+
+        $this->db->update('endorse_refresh_queue_attempts', [
+            'status' => $status,
+            'error_class' => $errorClass,
+            'error_message' => $msg,
+            'finished_at' => $finishedAt,
+        ], $where);
     }
 
     public function cronjob_endorse_refresh_enqueue_daily()

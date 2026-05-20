@@ -4,169 +4,310 @@ defined('BASEPATH') or exit('No direct script access allowed');
 class EndorseRefreshQueueService
 {
     protected $CI;
+    protected $db;
 
     public function __construct()
     {
         $this->CI =& get_instance();
         $this->CI->load->database();
         $this->CI->load->model('mymodel');
-        $this->CI->load->library('endorse_sync');
+        $this->db = $this->CI->db;
     }
 
-    public function enqueueCampaign($idCampaign, $userId = 0, $targetIds = [])
+    public function enqueueCampaign(int $id_campaign, int $user_id, array $ids = []): array
     {
-        $idCampaign = intval($idCampaign);
-        $userId = intval($userId);
-        $targetIds = array_values(array_unique(array_filter(array_map('intval', (array) $targetIds))));
-
-        if ($idCampaign <= 0) {
+        if ($id_campaign <= 0) {
             return [
                 'status' => false,
                 'msg' => 'Campaign tidak valid.',
                 'enqueued' => 0,
                 'skipped_duplicates' => 0,
-                'excluded_known_url' => 0,
+                'id_campaign' => $id_campaign,
             ];
         }
 
-        $extraFilter = '';
-        if (!empty($targetIds)) {
-            $extraFilter = ' AND id IN (' . implode(',', $targetIds) . ')';
+        $extra = '';
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids))));
+        if (!empty($ids)) {
+            $extra = ' AND id IN (' . implode(',', $ids) . ')';
         }
 
-        $rows = $this->CI->mymodel->selectWithQuery("SELECT id, id_campaign, platform, link_upload
+        $rows = $this->CI->mymodel->selectWithQuery("
+            SELECT id, id_campaign, platform, link_upload
             FROM endorse
-            WHERE id_campaign = '{$idCampaign}'
-              AND status = 'Aktif'
-              AND status_campaign = 'Aktif'
+            WHERE id_campaign = '" . intval($id_campaign) . "'
+              AND status = 'Aktif' AND status_campaign = 'Aktif'
               AND link_upload != ''
-              {$extraFilter}
-            ORDER BY id ASC");
+              $extra
+        ");
 
-        $enqueued = 0;
-        $skippedDuplicates = 0;
-        $excludedKnownUrl = 0;
+        if (empty($rows)) {
+            return [
+                'status' => false,
+                'msg' => 'Tidak ada konten aktif yang bisa direfresh.',
+                'enqueued' => 0,
+                'skipped_duplicates' => 0,
+                'id_campaign' => $id_campaign,
+            ];
+        }
+
+        $candidate_ids = array_map(function ($r) {
+            return intval($r['id']);
+        }, $rows);
+
+        $already = $this->loadActiveEndorseIds($candidate_ids);
+        $knownUrlIssues = $this->loadKnownUrlIssueEndorseIds($candidate_ids);
         $now = date('Y-m-d H:i:s');
+        $batch = [];
+        $skipped = 0;
+        $excludedKnownUrl = 0;
 
         foreach ($rows as $row) {
-            $idEndorse = intval($row['id'] ?? 0);
-            if ($idEndorse <= 0) {
+            $id_endorse = intval($row['id']);
+            if (isset($already[$id_endorse])) {
+                $skipped++;
                 continue;
             }
-
-            $active = $this->CI->mymodel->selectWithQuery("SELECT id
-                FROM endorse_refresh_queue
-                WHERE id_endorse = '{$idEndorse}'
-                  AND status IN ('pending', 'processing')
-                LIMIT 1");
-            if (!empty($active)) {
-                $skippedDuplicates++;
-                continue;
-            }
-
-            $latestFailure = $this->CI->mymodel->selectWithQuery("SELECT error_message
-                FROM endorse_refresh_queue
-                WHERE id_endorse = '{$idEndorse}' AND status = 'failed'
-                ORDER BY id DESC
-                LIMIT 1");
-            $latestFailure = $latestFailure[0]['error_message'] ?? '';
-            if ($this->CI->endorse_sync->isKnownPermanentFailure($latestFailure)) {
+            if (isset($knownUrlIssues[$id_endorse])) {
                 $excludedKnownUrl++;
                 continue;
             }
 
-            $payload = [
-                'id_endorse' => $idEndorse,
-                'id_campaign' => intval($row['id_campaign'] ?? $idCampaign),
-                'platform' => strval($row['platform'] ?? ''),
-                'link_upload' => strval($row['link_upload'] ?? ''),
+            $batch[] = [
+                'id_endorse' => $id_endorse,
+                'id_campaign' => intval($row['id_campaign']),
+                'platform' => strval($row['platform']),
+                'link_upload' => strval($row['link_upload']),
                 'status' => 'pending',
                 'priority' => 10,
                 'attempts' => 0,
                 'max_attempts' => 3,
-                'error_message' => null,
-                'claimed_at' => null,
-                'worker_id' => null,
-                'enqueued_by' => $userId > 0 ? $userId : null,
-                'retry_source_id' => null,
+                'enqueued_by' => $user_id,
                 'created_at' => $now,
-                'started_at' => null,
-                'completed_at' => null,
             ];
-            $this->CI->db->insert('endorse_refresh_queue', $payload);
-            $enqueued++;
+        }
+
+        if (!empty($batch)) {
+            $this->db->insert_batch('endorse_refresh_queue', $batch);
+        }
+
+        $msg = count($batch) . ' konten ditambahkan ke antrian.';
+        if ($skipped > 0) {
+            $msg .= " $skipped sudah ada di antrian.";
+        }
+        if ($excludedKnownUrl > 0) {
+            $msg .= " $excludedKnownUrl dilewati karena URL TikTok bermasalah.";
         }
 
         return [
             'status' => true,
-            'msg' => $enqueued . ' konten ditambahkan ke antrian.',
-            'enqueued' => $enqueued,
-            'skipped_duplicates' => $skippedDuplicates,
+            'msg' => $msg,
+            'enqueued' => count($batch),
+            'skipped_duplicates' => $skipped,
             'excluded_known_url' => $excludedKnownUrl,
-            'id_campaign' => $idCampaign,
+            'count' => count($rows),
+            'id_campaign' => $id_campaign,
         ];
     }
 
-    public function computeHealth()
+    public function cloneFailedRows(array $queueIds, int $user_id): array
     {
-        $summaryRows = $this->CI->mymodel->selectWithQuery("SELECT status, COUNT(*) AS total
+        $queueIds = array_values(array_unique(array_filter(array_map('intval', $queueIds))));
+        if (empty($queueIds)) {
+            return ['status' => false, 'msg' => 'Tidak ada baris dipilih.', 'updated' => 0];
+        }
+
+        $idList = implode(',', $queueIds);
+        $rows = $this->CI->mymodel->selectWithQuery("
+            SELECT id, id_endorse, id_campaign, platform, link_upload, priority, max_attempts
             FROM endorse_refresh_queue
-            GROUP BY status");
+            WHERE id IN ($idList) AND status = 'failed'
+        ");
 
-        $summary = [
-            'pending' => 0,
-            'processing' => 0,
-            'completed' => 0,
-            'failed' => 0,
-        ];
-        foreach ($summaryRows as $row) {
-            $status = strtolower((string) ($row['status'] ?? ''));
-            if (array_key_exists($status, $summary)) {
-                $summary[$status] = intval($row['total'] ?? 0);
+        if (empty($rows)) {
+            return ['status' => false, 'msg' => 'Tidak ada baris gagal yang bisa dijadwalkan ulang.', 'updated' => 0];
+        }
+
+        $active = $this->loadActiveEndorseIds(array_map(function ($row) {
+            return intval($row['id_endorse']);
+        }, $rows));
+
+        $now = date('Y-m-d H:i:s');
+        $batch = [];
+        $skipped = 0;
+
+        foreach ($rows as $row) {
+            $id_endorse = intval($row['id_endorse']);
+            if (isset($active[$id_endorse])) {
+                $skipped++;
+                continue;
             }
+
+            $batch[] = [
+                'id_endorse' => $id_endorse,
+                'id_campaign' => intval($row['id_campaign']),
+                'platform' => strval($row['platform']),
+                'link_upload' => strval($row['link_upload']),
+                'status' => 'pending',
+                'priority' => intval($row['priority']) > 0 ? intval($row['priority']) : 10,
+                'attempts' => 0,
+                'max_attempts' => intval($row['max_attempts']) > 0 ? intval($row['max_attempts']) : 3,
+                'enqueued_by' => $user_id,
+                'retry_source_id' => intval($row['id']),
+                'created_at' => $now,
+            ];
         }
 
-        $timestamps = $this->CI->mymodel->selectWithQuery("SELECT
-            MIN(CASE WHEN status = 'pending' THEN created_at END) AS oldest_pending_at,
-            MAX(CASE WHEN status = 'completed' THEN completed_at END) AS last_completed_at,
-            MAX(started_at) AS last_started_at
-            FROM endorse_refresh_queue");
-        $timestamps = $timestamps[0] ?? [];
-
-        $processing = intval($summary['processing']);
-        $pending = intval($summary['pending']);
-        $staleMinutes = intval(env('ENDORSE_QUEUE_STALE_MINUTES', 10));
-        if ($staleMinutes < 5) {
-            $staleMinutes = 10;
-        }
-
-        $activityCandidates = array_filter([
-            $timestamps['last_started_at'] ?? null,
-            $timestamps['last_completed_at'] ?? null,
-            $timestamps['oldest_pending_at'] ?? null,
-        ]);
-        $lastActivityAt = null;
-        foreach ($activityCandidates as $candidate) {
-            if ($lastActivityAt === null || strtotime($candidate) > strtotime($lastActivityAt)) {
-                $lastActivityAt = $candidate;
-            }
-        }
-        $isStalled = false;
-        if ($pending > 0 && $processing === 0 && !empty($lastActivityAt)) {
-            $isStalled = (time() - strtotime($lastActivityAt)) > ($staleMinutes * 60);
+        if (!empty($batch)) {
+            $this->db->insert_batch('endorse_refresh_queue', $batch);
         }
 
         return [
-            'summary' => $summary,
-            'health' => [
-                'active_total' => $pending + $processing,
-                'pending_total' => $pending,
-                'processing_total' => $processing,
-                'oldest_pending_at' => $timestamps['oldest_pending_at'] ?: null,
-                'last_completed_at' => $timestamps['last_completed_at'] ?: null,
-                'last_started_at' => $timestamps['last_started_at'] ?: null,
-                'is_stalled' => $isStalled,
-            ],
+            'status' => true,
+            'msg' => count($batch) . ' baris dijadwalkan ulang.' . ($skipped > 0 ? " $skipped dilewati karena masih aktif di antrian." : ''),
+            'updated' => count($batch),
+            'skipped_duplicates' => $skipped,
         ];
+    }
+
+    public function clearAll(): array
+    {
+        $attemptRows = $this->CI->mymodel->selectWithQuery("SELECT COUNT(*) AS c FROM endorse_refresh_queue_attempts");
+        $queueRows = $this->CI->mymodel->selectWithQuery("SELECT COUNT(*) AS c FROM endorse_refresh_queue");
+        $attemptCount = !empty($attemptRows) ? intval($attemptRows[0]['c']) : 0;
+        $queueCount = !empty($queueRows) ? intval($queueRows[0]['c']) : 0;
+
+        $this->db->trans_start();
+        $this->db->query("DELETE FROM endorse_refresh_queue_attempts");
+        $this->db->query("DELETE FROM endorse_refresh_queue");
+        $this->db->trans_complete();
+
+        if ($this->db->trans_status() === false) {
+            return [
+                'status' => false,
+                'msg' => 'Gagal menghapus data antrian.',
+                'deleted_queue' => 0,
+                'deleted_attempts' => 0,
+            ];
+        }
+
+        return [
+            'status' => true,
+            'msg' => $queueCount . ' data antrian dan ' . $attemptCount . ' riwayat percobaan dihapus.',
+            'deleted_queue' => $queueCount,
+            'deleted_attempts' => $attemptCount,
+        ];
+    }
+
+    public function computeHealth(int $id_campaign = 0, int $staleMinutes = 10): array
+    {
+        $where = '';
+        if ($id_campaign > 0) {
+            $where = " AND id_campaign = '" . intval($id_campaign) . "'";
+        }
+
+        $summaryRows = $this->CI->mymodel->selectWithQuery("
+            SELECT status, COUNT(*) AS c
+            FROM endorse_refresh_queue
+            WHERE status IN ('pending','processing')
+            $where
+            GROUP BY status
+        ");
+
+        $pending = 0;
+        $processing = 0;
+        foreach ($summaryRows as $row) {
+            if ($row['status'] === 'pending') {
+                $pending = intval($row['c']);
+            }
+            if ($row['status'] === 'processing') {
+                $processing = intval($row['c']);
+            }
+        }
+
+        $metaRows = $this->CI->mymodel->selectWithQuery("
+            SELECT
+                MIN(CASE WHEN status = 'pending' THEN created_at END) AS oldest_pending_at,
+                MAX(CASE WHEN status IN ('completed','failed') THEN completed_at END) AS last_completed_at,
+                MAX(CASE WHEN status = 'processing' THEN started_at END) AS last_started_at
+            FROM endorse_refresh_queue
+            WHERE 1 = 1
+            $where
+        ");
+        $meta = !empty($metaRows) ? $metaRows[0] : [];
+
+        $oldestPendingAt = $meta['oldest_pending_at'] ?? null;
+        $lastCompletedAt = $meta['last_completed_at'] ?? null;
+        $lastStartedAt = $meta['last_started_at'] ?? null;
+        $lastActivityAt = $lastStartedAt ?: $lastCompletedAt;
+        $isStalled = false;
+
+        if ($pending > 0 && $processing === 0) {
+            if (empty($lastActivityAt) || strtotime($lastActivityAt) < strtotime('-' . intval($staleMinutes) . ' minutes')) {
+                $isStalled = true;
+            }
+        }
+
+        return [
+            'active_total' => $pending + $processing,
+            'pending_total' => $pending,
+            'processing_total' => $processing,
+            'oldest_pending_at' => $oldestPendingAt,
+            'last_completed_at' => $lastCompletedAt,
+            'last_started_at' => $lastStartedAt,
+            'is_stalled' => $isStalled,
+        ];
+    }
+
+    private function loadActiveEndorseIds(array $endorseIds): array
+    {
+        $endorseIds = array_values(array_unique(array_filter(array_map('intval', $endorseIds))));
+        if (empty($endorseIds)) {
+            return [];
+        }
+
+        $idList = implode(',', $endorseIds);
+        $rows = $this->CI->mymodel->selectWithQuery("
+            SELECT DISTINCT id_endorse
+            FROM endorse_refresh_queue
+            WHERE status IN ('pending', 'processing')
+              AND id_endorse IN ($idList)
+        ");
+
+        $map = [];
+        foreach ($rows as $row) {
+            $map[intval($row['id_endorse'])] = true;
+        }
+        return $map;
+    }
+
+    private function loadKnownUrlIssueEndorseIds(array $endorseIds): array
+    {
+        $endorseIds = array_values(array_unique(array_filter(array_map('intval', $endorseIds))));
+        if (empty($endorseIds)) {
+            return [];
+        }
+
+        $idList = implode(',', $endorseIds);
+        $rows = $this->CI->mymodel->selectWithQuery("
+            SELECT id_endorse, error_message
+            FROM endorse_refresh_queue
+            WHERE status = 'failed'
+              AND id_endorse IN ($idList)
+            ORDER BY id DESC
+        ");
+
+        $map = [];
+        $this->CI->load->library('endorse_sync');
+        foreach ($rows as $row) {
+            $idEndorse = intval($row['id_endorse']);
+            if ($idEndorse <= 0 || isset($map[$idEndorse])) {
+                continue;
+            }
+            if ($this->CI->endorse_sync->isKnownPermanentFailure(strval($row['error_message'] ?? ''))) {
+                $map[$idEndorse] = true;
+            }
+        }
+        return $map;
     }
 }

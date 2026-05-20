@@ -103,39 +103,52 @@
     </div>
 </div>
 <script>
-    function refreshCampaignQueue(id, silent) {
-        return $.getJSON("<?= base_url() ?>ajax/refresh-campaign-endorses", { id_campaign: id }).done(function(response) {
-            if (!silent) {
-                var message = response && response.msg ? response.msg : 'Refresh campaign dimasukkan ke antrian.';
-                alert(message);
+    function refreshCampaign(id) {
+        var btn = document.getElementById('refresh-btn-' + id);
+        if (!btn) return;
+        btn.innerHTML = '<i class="bi bi-hourglass-split fs-16"></i> Memperbarui...';
+        btn.disabled = true;
+        $.get('<?= base_url() ?>ajax/refresh-campaign-endorses', { id_campaign: id }, function(res) {
+            if (res.status) {
+                var msg = res.msg + ' <a href="<?= base_url() ?>endorse/queue?id_campaign=' + id + '"><b>Lihat antrian →</b></a>';
+                showCampaignToast(msg, 'info');
             }
+            btn.innerHTML = '<i class="bi bi-arrow-clockwise fs-16"></i> Refresh';
+            btn.disabled = false;
+        }, 'json').fail(function() {
+            btn.innerHTML = '<i class="bi bi-arrow-clockwise fs-16"></i> Refresh';
+            btn.disabled = false;
         });
     }
 
     function refreshVisibleCampaigns() {
-        var ids = [];
-        $("#tbody .card").each(function() {
-            var href = $(this).find('a[href*="endorse?id_campaign="]').first().attr('href') || '';
-            var match = href.match(/id_campaign=(\d+)/);
-            if (match) {
-                ids.push(match[1]);
-            }
+        var buttons = document.querySelectorAll('[id^="refresh-btn-"]');
+        if (!buttons.length) return;
+        if (!confirm('Antrikan refresh untuk ' + buttons.length + ' campaign? Proses asinkron, pantau di icon antrian.')) return;
+        var totalEnqueued = 0, totalSkipped = 0, done = 0;
+        buttons.forEach(function(btn) {
+            var id = btn.id.replace('refresh-btn-', '');
+            $.get('<?= base_url() ?>ajax/refresh-campaign-endorses', { id_campaign: id }, function(res) {
+                if (res && res.status) {
+                    totalEnqueued += parseInt(res.enqueued || 0);
+                    totalSkipped  += parseInt(res.skipped_duplicates || 0);
+                }
+                done++;
+                if (done === buttons.length) {
+                    var msg = 'Antrian dibuat: ' + totalEnqueued + ' baru, ' + totalSkipped + ' sudah ada. ' +
+                        '<a href="<?= base_url() ?>endorse/queue"><b>Lihat antrian →</b></a>';
+                    showCampaignToast(msg, 'success');
+                }
+            }, 'json');
         });
+    }
 
-        ids = Array.from(new Set(ids));
-        if (!ids.length) {
-            return;
+    function showCampaignToast(msg, type) {
+        if (typeof Swal !== 'undefined') {
+            Swal.fire({ icon: type || 'info', html: msg, toast: true, position: 'top-end', showConfirmButton: false, timer: 6000 });
+        } else {
+            alert(msg.replace(/<[^>]+>/g, ''));
         }
-
-        var requests = ids.map(function(id) {
-            return refreshCampaignQueue(id, true);
-        });
-
-        $.when.apply($, requests).done(function() {
-            alert(ids.length + ' campaign diproses ke antrian refresh.');
-        }).fail(function() {
-            alert('Sebagian campaign gagal dimasukkan ke antrian.');
-        });
     }
 
     function create() {
