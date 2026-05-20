@@ -223,7 +223,18 @@ class Endorse_campaign extends BaseController
             $offset = ($current_page - 1) * $limit;
         }
 
-        $query = $this->mymodel->selectWithQuery("SELECT * FROM endorse_campaign
+        $query = $this->mymodel->selectWithQuery("
+        SELECT endorse_campaign.*,
+               COALESCE(
+                   (SELECT MAX(sync_at)
+                    FROM endorse
+                    WHERE id_campaign = endorse_campaign.id
+                      AND sync_at IS NOT NULL
+                      AND sync_at != ''),
+                   endorse_campaign.updated_at,
+                   endorse_campaign.created_at
+               ) AS latest_update_at
+        FROM endorse_campaign
         WHERE $qry 
         ORDER BY start_at DESC
         LIMIT $offset, $limit

@@ -8,16 +8,16 @@ $campaigns = isset($campaigns) ? $campaigns : [];
     .queue-card { flex: 1 1 160px; padding: 12px 16px; border-radius: 8px; background: #fff; border: 1px solid #e5e7eb; }
     .queue-card .label { font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: .5px; }
     .queue-card .value { font-size: 24px; font-weight: 600; margin-top: 4px; }
-    .queue-card.pending    .value { color: #6b7280; }
+    .queue-card.pending .value { color: #6b7280; }
     .queue-card.processing .value { color: #2563eb; }
-    .queue-card.completed  .value { color: #059669; }
-    .queue-card.failed     .value { color: #dc2626; }
+    .queue-card.completed .value { color: #059669; }
+    .queue-card.failed .value { color: #dc2626; }
     .queue-status-pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; }
-    .queue-status-pill.pending    { background: #f3f4f6; color: #374151; }
+    .queue-status-pill.pending { background: #f3f4f6; color: #374151; }
     .queue-status-pill.processing { background: #dbeafe; color: #1e40af; }
-    .queue-status-pill.retrying   { background: #fef3c7; color: #92400e; }
-    .queue-status-pill.completed  { background: #d1fae5; color: #065f46; }
-    .queue-status-pill.failed     { background: #fee2e2; color: #991b1b; }
+    .queue-status-pill.retrying { background: #fef3c7; color: #92400e; }
+    .queue-status-pill.completed { background: #d1fae5; color: #065f46; }
+    .queue-status-pill.failed { background: #fee2e2; color: #991b1b; }
     .queue-error-msg { font-size: 12px; color: #991b1b; word-break: break-word; max-width: 320px; }
     .queue-link { font-size: 12px; color: #2563eb; text-decoration: none; word-break: break-all; }
     .queue-link:hover { text-decoration: underline; }
@@ -31,6 +31,13 @@ $campaigns = isset($campaigns) ? $campaigns : [];
     .queue-history-list { max-height: 360px; overflow-y: auto; }
     .queue-history-item { border-bottom: 1px solid #e5e7eb; padding: 10px 0; }
     .queue-history-item:last-child { border-bottom: none; }
+    .queue-operator-card { border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 16px; margin-bottom: 16px; }
+    .queue-operator-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .queue-operator-item { border: 1px solid #eef2f7; border-radius: 8px; padding: 12px; background: #f8fafc; }
+    .queue-operator-item .label { font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: .5px; }
+    .queue-operator-item .value { font-size: 15px; font-weight: 600; color: #111827; margin-top: 4px; }
+    .queue-pagination { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+    .queue-pagination .summary { font-size: 12px; color: #6b7280; }
 </style>
 
 <div class="container-fluid pt-3">
@@ -40,6 +47,9 @@ $campaigns = isset($campaigns) ? $campaigns : [];
             <small class="text-muted">Status proses sinkronisasi data sosial media untuk endorse content.</small>
         </div>
         <div>
+            <button class="btn btn-outline-primary btn-sm me-2" id="btnEnqueueDailyNow">
+                <i class="fa fa-calendar-plus"></i> Enqueue Harian Sekarang
+            </button>
             <button class="btn btn-outline-secondary btn-sm me-2" id="btnClearQueue">
                 <i class="fa fa-trash"></i> Clear Semua Data
             </button>
@@ -57,6 +67,34 @@ $campaigns = isset($campaigns) ? $campaigns : [];
     </div>
 
     <div class="alert queue-health" id="queueHealthBanner"></div>
+
+    <div class="queue-operator-card">
+        <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-3">
+            <div>
+                <h6 class="mb-1">Konteks Operator</h6>
+                <small class="text-muted">Pantau status worker, aktivitas terakhir, dan jalankan enqueue harian manual bila dibutuhkan.</small>
+            </div>
+            <span class="queue-status-pill pending" id="queueWorkerStatusLabel">Idle</span>
+        </div>
+        <div class="queue-operator-grid">
+            <div class="queue-operator-item">
+                <div class="label">Jadwal Otomatis</div>
+                <div class="value" id="queueAutoScheduleText">Setiap hari 01:00 WIB</div>
+            </div>
+            <div class="queue-operator-item">
+                <div class="label">Aktivitas Terakhir</div>
+                <div class="value" id="queueLastActivityText">-</div>
+            </div>
+            <div class="queue-operator-item">
+                <div class="label">Pending Tertua</div>
+                <div class="value" id="queueOldestPendingText">-</div>
+            </div>
+            <div class="queue-operator-item">
+                <div class="label">Selesai Terakhir</div>
+                <div class="value" id="queueLastCompletedText">-</div>
+            </div>
+        </div>
+    </div>
 
     <div class="queue-filters card p-3">
         <div class="form-group">
@@ -87,6 +125,18 @@ $campaigns = isset($campaigns) ? $campaigns : [];
             </select>
         </div>
         <div class="form-group">
+            <label class="small">Cari</label>
+            <input type="text" id="filter-keyword" class="form-control form-control-sm" placeholder="Campaign, influencer, link, error...">
+        </div>
+        <div class="form-group">
+            <label class="small">Per Halaman</label>
+            <select id="filter-length" class="form-control form-control-sm">
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+            </select>
+        </div>
+        <div class="form-group">
             <button id="btnReload" class="btn btn-primary btn-sm"><i class="fa fa-sync"></i> Refresh</button>
         </div>
     </div>
@@ -111,6 +161,13 @@ $campaigns = isset($campaigns) ? $campaigns : [];
             </thead>
             <tbody></tbody>
         </table>
+        <div class="queue-pagination">
+            <div class="summary" id="queuePageSummary">Menampilkan 0 data</div>
+            <div class="d-flex gap-2">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="btnPrevPage">Sebelumnya</button>
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="btnNextPage">Berikutnya</button>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -132,32 +189,62 @@ $campaigns = isset($campaigns) ? $campaigns : [];
 </div>
 
 <script>
-(function(){
+(function() {
     const baseUrl = '<?= base_url() ?>';
     let pollTimer = null;
     let historyModal = null;
+    let currentStart = 0;
+    let currentLength = 25;
+    let currentTotal = 0;
+    let keywordTimer = null;
 
     function getStatusFilter() {
-        return $('.filter-status:checked').map(function(){ return this.value; }).get();
+        return $('.filter-status:checked').map(function() {
+            return this.value;
+        }).get();
     }
 
-    function statusPill(s) {
+    function statusPill(status) {
         const labels = {
-            pending: 'Menunggu', processing: 'Berjalan',
+            pending: 'Menunggu',
+            processing: 'Berjalan',
             retrying: 'Retry',
-            completed: 'Berhasil', failed: 'Gagal'
+            completed: 'Berhasil',
+            failed: 'Gagal'
         };
-        return '<span class="queue-status-pill ' + s + '">' + (labels[s] || s) + '</span>';
+        return '<span class="queue-status-pill ' + status + '">' + (labels[status] || status) + '</span>';
     }
 
-    function escHtml(s) {
-        return $('<div>').text(s == null ? '' : String(s)).html();
+    function escHtml(value) {
+        return $('<div>').text(value == null ? '' : String(value)).html();
+    }
+
+    function formatDateTime(value) {
+        if (!value) {
+            return '-';
+        }
+        if (window.moment) {
+            const date = moment(value);
+            if (date.isValid()) {
+                return date.format('DD/MM/YYYY HH:mm');
+            }
+        }
+        return value;
+    }
+
+    function setWorkerStatus(text, variant) {
+        $('#queueWorkerStatusLabel')
+            .removeClass('pending processing retrying completed failed')
+            .addClass(variant)
+            .text(text);
     }
 
     function renderLoadError(message) {
         $('#sum-pending, #sum-processing, #sum-completed, #sum-failed').text('0');
         $('#checkAll').prop('checked', false);
         $('#queueHealthBanner').removeClass('stalled').hide();
+        $('#queuePageSummary').text('Menampilkan 0 data');
+        $('#btnPrevPage, #btnNextPage').prop('disabled', true);
         $('#queueTable tbody').html(
             '<tr><td colspan="12" class="text-center text-danger py-4">' + escHtml(message) + '</td></tr>'
         );
@@ -166,7 +253,9 @@ $campaigns = isset($campaigns) ? $campaigns : [];
     }
 
     function formatMetaLabel(label, value) {
-        if (!value) return '';
+        if (!value) {
+            return '';
+        }
         return '<span class="me-3"><strong>' + escHtml(label) + ':</strong> ' + escHtml(value) + '</span>';
     }
 
@@ -180,13 +269,50 @@ $campaigns = isset($campaigns) ? $campaigns : [];
         let html = '<strong>Antrian terlihat macet.</strong> ';
         html += 'Masih ada ' + escHtml(health.pending_total || 0) + ' item menunggu tanpa proses berjalan.';
         if (health.oldest_pending_at) {
-            html += ' Pending tertua: ' + escHtml(health.oldest_pending_at) + '.';
+            html += ' Pending tertua: ' + escHtml(formatDateTime(health.oldest_pending_at)) + '.';
         }
         if (health.last_started_at) {
-            html += ' Aktivitas worker terakhir: ' + escHtml(health.last_started_at) + '.';
+            html += ' Aktivitas worker terakhir: ' + escHtml(formatDateTime(health.last_started_at)) + '.';
         }
 
         $banner.addClass('stalled').html(html).show();
+    }
+
+    function updateOperatorContext(resp) {
+        const health = resp.health || {};
+        const stalled = !!health.is_stalled;
+        const processing = parseInt(health.processing_total || 0, 10);
+        const pending = parseInt(health.pending_total || 0, 10);
+        const workerStatus = resp.worker_status || (stalled ? 'Stalled' : 'Idle');
+        let variant = 'completed';
+
+        if (stalled) {
+            variant = 'failed';
+        } else if (processing > 0) {
+            variant = 'processing';
+        } else if (pending > 0) {
+            variant = 'retrying';
+        }
+
+        setWorkerStatus(workerStatus, variant);
+        $('#queueAutoScheduleText').text(resp.auto_enqueue_schedule || 'Setiap hari 01:00 WIB');
+        $('#queueLastActivityText').text(formatDateTime(resp.last_activity_at || health.last_started_at || health.oldest_pending_at));
+        $('#queueOldestPendingText').text(formatDateTime(health.oldest_pending_at));
+        $('#queueLastCompletedText').text(formatDateTime(health.last_completed_at));
+    }
+
+    function updatePaginationSummary(total, rowCount) {
+        if (!total || rowCount === 0) {
+            $('#queuePageSummary').text('Menampilkan 0 data');
+            $('#btnPrevPage, #btnNextPage').prop('disabled', true);
+            return;
+        }
+
+        const from = currentStart + 1;
+        const to = currentStart + rowCount;
+        $('#queuePageSummary').text('Menampilkan ' + from + '-' + to + ' dari ' + total + ' data');
+        $('#btnPrevPage').prop('disabled', currentStart <= 0);
+        $('#btnNextPage').prop('disabled', (currentStart + currentLength) >= total);
     }
 
     function openHistory(queueId, meta) {
@@ -211,19 +337,19 @@ $campaigns = isset($campaigns) ? $campaigns : [];
                 if (!rows.length) {
                     $('#queueHistoryList').html('<div class="text-muted">Belum ada riwayat percobaan tersimpan.</div>');
                 } else {
-                    const html = rows.map(function(r) {
+                    const html = rows.map(function(row) {
                         return '' +
                             '<div class="queue-history-item">' +
                                 '<div class="d-flex justify-content-between align-items-start gap-2">' +
-                                    '<div><strong>Percobaan #' + escHtml(r.attempt_no) + '</strong> ' + statusPill(r.status) + '</div>' +
-                                    '<div class="queue-meta">' + escHtml(r.worker_id || '-') + '</div>' +
+                                    '<div><strong>Percobaan #' + escHtml(row.attempt_no) + '</strong> ' + statusPill(row.status) + '</div>' +
+                                    '<div class="queue-meta">' + escHtml(row.worker_id || '-') + '</div>' +
                                 '</div>' +
                                 '<div class="queue-meta mt-2">' +
-                                    formatMetaLabel('Mulai', r.started_at) +
-                                    formatMetaLabel('Selesai', r.finished_at) +
-                                    formatMetaLabel('Error', r.error_class) +
+                                    formatMetaLabel('Mulai', formatDateTime(row.started_at)) +
+                                    formatMetaLabel('Selesai', formatDateTime(row.finished_at)) +
+                                    formatMetaLabel('Error', row.error_class) +
                                 '</div>' +
-                                (r.error_message ? '<div class="queue-error-msg mt-2">' + escHtml(r.error_message) + '</div>' : '') +
+                                (row.error_message ? '<div class="queue-error-msg mt-2">' + escHtml(row.error_message) + '</div>' : '') +
                             '</div>';
                     }).join('');
                     $('#queueHistoryList').html(html);
@@ -241,13 +367,19 @@ $campaigns = isset($campaigns) ? $campaigns : [];
         });
     }
 
-    function loadData() {
+    function loadData(resetPage) {
+        if (resetPage) {
+            currentStart = 0;
+        }
+
+        currentLength = parseInt($('#filter-length').val() || '25', 10);
         const params = {
             id_campaign: $('#filter-campaign').val(),
-            status:      getStatusFilter().join(','),
+            status: getStatusFilter().join(','),
             since_hours: $('#filter-since').val(),
-            length:      100,
-            start:       0
+            keyword: $('#filter-keyword').val(),
+            length: currentLength,
+            start: currentStart
         };
 
         $.ajax({
@@ -262,31 +394,38 @@ $campaigns = isset($campaigns) ? $campaigns : [];
                 $('#sum-failed').text(resp.summary.failed || 0);
                 $('#checkAll').prop('checked', false);
                 renderHealth(resp.health || {});
+                updateOperatorContext(resp);
 
                 const rows = resp.data || [];
+                currentTotal = parseInt(resp.recordsFiltered || 0, 10);
                 const $tbody = $('#queueTable tbody').empty();
+
                 if (!rows.length) {
                     $tbody.append('<tr><td colspan="12" class="text-center text-muted py-4">Tidak ada data dalam rentang waktu yang dipilih.</td></tr>');
                 } else {
-                    rows.forEach(function(r) {
-                        const checkable = r.status === 'failed';
-                        const cb = checkable
-                            ? '<input type="checkbox" class="row-check" value="' + r.id + '">'
+                    rows.forEach(function(row) {
+                        const checkable = row.status === 'failed';
+                        const checkbox = checkable
+                            ? '<input type="checkbox" class="row-check" value="' + row.id + '">'
                             : '';
-                        const action = '<a href="#!" class="queue-action-link btn-history" data-id="' + r.id + '" data-campaign="' + escHtml(r.campaign_title || ('#' + r.id_campaign)) + '" data-influencer="' + escHtml(r.influencer_name || '-') + '" data-status="' + escHtml(r.status) + '">Riwayat</a>';
+                        let action = '<a href="#!" class="queue-action-link btn-history me-2" data-id="' + row.id + '" data-campaign="' + escHtml(row.campaign_title || ('#' + row.id_campaign)) + '" data-influencer="' + escHtml(row.influencer_name || '-') + '" data-status="' + escHtml(row.status) + '">Riwayat</a>';
+                        if (row.redirect_url) {
+                            action += '<a class="queue-action-link" href="' + escHtml(row.redirect_url) + '">Lihat Konten</a>';
+                        }
+
                         $tbody.append(
                             '<tr>' +
-                                '<td>' + cb + '</td>' +
-                                '<td>' + escHtml(r.campaign_title || '#' + r.id_campaign) + '</td>' +
-                                '<td>' + escHtml(r.influencer_name || '-') + '</td>' +
-                                '<td>' + escHtml(r.platform) + '</td>' +
-                                '<td><a class="queue-link" target="_blank" href="' + escHtml(r.link_upload) + '">' + escHtml(r.link_upload) + '</a></td>' +
-                                '<td>' + statusPill(r.status) + '</td>' +
-                                '<td>' + r.attempts + ' / ' + r.max_attempts + '</td>' +
-                                '<td><small>' + escHtml(r.queued_at || '-') + '</small></td>' +
-                                '<td><small>' + escHtml(r.started_at || '-') + '</small></td>' +
-                                '<td><small>' + escHtml(r.completed_at || '-') + '</small></td>' +
-                                '<td><div class="queue-error-msg">' + escHtml(r.error_message || '') + '</div></td>' +
+                                '<td>' + checkbox + '</td>' +
+                                '<td>' + escHtml(row.campaign_title || '#' + row.id_campaign) + '</td>' +
+                                '<td>' + escHtml(row.influencer_name || '-') + '</td>' +
+                                '<td>' + escHtml(row.platform) + '</td>' +
+                                '<td><a class="queue-link" target="_blank" href="' + escHtml(row.link_upload) + '">' + escHtml(row.link_upload) + '</a></td>' +
+                                '<td>' + statusPill(row.status) + '</td>' +
+                                '<td>' + escHtml(row.attempts) + ' / ' + escHtml(row.max_attempts) + '</td>' +
+                                '<td><small>' + escHtml(formatDateTime(row.queued_at)) + '</small></td>' +
+                                '<td><small>' + escHtml(formatDateTime(row.started_at)) + '</small></td>' +
+                                '<td><small>' + escHtml(formatDateTime(row.completed_at)) + '</small></td>' +
+                                '<td><div class="queue-error-msg">' + escHtml(row.error_message || '') + '</div></td>' +
                                 '<td>' + action + '</td>' +
                             '</tr>'
                         );
@@ -294,8 +433,9 @@ $campaigns = isset($campaigns) ? $campaigns : [];
                 }
 
                 updateRetryButton();
+                updatePaginationSummary(currentTotal, rows.length);
 
-                const stillRunning = (resp.health && resp.health.active_total > 0);
+                const stillRunning = resp.health && parseInt(resp.health.active_total || 0, 10) > 0;
                 schedulePoll(stillRunning);
             },
             error: function(xhr) {
@@ -308,27 +448,50 @@ $campaigns = isset($campaigns) ? $campaigns : [];
     }
 
     function schedulePoll(active) {
-        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        if (pollTimer) {
+            clearTimeout(pollTimer);
+            pollTimer = null;
+        }
         if (active) {
-            pollTimer = setTimeout(loadData, 5000);
+            pollTimer = setTimeout(function() {
+                loadData(false);
+            }, 5000);
         }
     }
 
     function updateRetryButton() {
-        const n = $('.row-check:checked').length;
-        $('#btnRetryFailed').prop('disabled', n === 0)
-            .text(n > 0 ? 'Retry Gagal Terpilih (' + n + ')' : 'Retry Gagal Terpilih');
+        const count = $('.row-check:checked').length;
+        $('#btnRetryFailed')
+            .prop('disabled', count === 0)
+            .text(count > 0 ? 'Retry Gagal Terpilih (' + count + ')' : 'Retry Gagal Terpilih');
     }
 
-    $('#filter-campaign, #filter-since').on('change', loadData);
-    $(document).on('change', '.filter-status', loadData);
-    $('#btnReload').on('click', loadData);
+    $('#filter-campaign, #filter-since, #filter-length').on('change', function() {
+        loadData(true);
+    });
+
+    $(document).on('change', '.filter-status', function() {
+        loadData(true);
+    });
+
+    $('#filter-keyword').on('input', function() {
+        clearTimeout(keywordTimer);
+        keywordTimer = setTimeout(function() {
+            loadData(true);
+        }, 350);
+    });
+
+    $('#btnReload').on('click', function() {
+        loadData(false);
+    });
 
     $('#checkAll').on('change', function() {
         $('.row-check').prop('checked', this.checked);
         updateRetryButton();
     });
+
     $(document).on('change', '.row-check', updateRetryButton);
+
     $(document).on('click', '.btn-history', function(e) {
         e.preventDefault();
         openHistory($(this).data('id'), {
@@ -338,9 +501,30 @@ $campaigns = isset($campaigns) ? $campaigns : [];
         });
     });
 
+    $('#btnPrevPage').on('click', function() {
+        if (currentStart <= 0) {
+            return;
+        }
+        currentStart = Math.max(0, currentStart - currentLength);
+        loadData(false);
+    });
+
+    $('#btnNextPage').on('click', function() {
+        if ((currentStart + currentLength) >= currentTotal) {
+            return;
+        }
+        currentStart += currentLength;
+        loadData(false);
+    });
+
     $('#btnRetryFailed').on('click', function() {
-        const ids = $('.row-check:checked').map(function(){ return this.value; }).get();
-        if (!ids.length) return;
+        const ids = $('.row-check:checked').map(function() {
+            return this.value;
+        }).get();
+        if (!ids.length) {
+            return;
+        }
+
         const $btn = $(this).prop('disabled', true).text('Memproses...');
         $.ajax({
             url: baseUrl + 'endorse/force-retry',
@@ -349,7 +533,7 @@ $campaigns = isset($campaigns) ? $campaigns : [];
             dataType: 'json',
             success: function(resp) {
                 alert(resp.msg);
-                loadData();
+                loadData(false);
             },
             error: function(xhr) {
                 const msg = xhr.responseJSON && xhr.responseJSON.msg
@@ -375,7 +559,7 @@ $campaigns = isset($campaigns) ? $campaigns : [];
             dataType: 'json',
             success: function(resp) {
                 alert(resp.msg || 'Data antrian berhasil dihapus.');
-                loadData();
+                loadData(true);
             },
             error: function(xhr) {
                 const msg = xhr.responseJSON && xhr.responseJSON.msg
@@ -389,6 +573,34 @@ $campaigns = isset($campaigns) ? $campaigns : [];
         });
     });
 
-    loadData();
+    $('#btnEnqueueDailyNow').on('click', function() {
+        const $btn = $(this).prop('disabled', true).html('<i class="fa fa-circle-o-notch fa-spin"></i> Memproses...');
+        $.ajax({
+            url: baseUrl + 'endorse/queue-enqueue-daily',
+            method: 'POST',
+            dataType: 'json',
+            success: function(resp) {
+                const summary = resp.data || {};
+                alert(
+                    (resp.msg || 'Enqueue harian selesai.') + '\n' +
+                    'Campaign diproses: ' + (summary.processed_campaigns || 0) + '/' + (summary.campaign_total || 0) + '\n' +
+                    'Queue baru: ' + (summary.enqueued || 0) + '\n' +
+                    'Duplikat aktif: ' + (summary.skipped_duplicates || 0)
+                );
+                loadData(true);
+            },
+            error: function(xhr) {
+                const msg = xhr.responseJSON && xhr.responseJSON.msg
+                    ? xhr.responseJSON.msg
+                    : 'Gagal menjalankan enqueue harian.';
+                alert(msg);
+            },
+            complete: function() {
+                $btn.prop('disabled', false).html('<i class="fa fa-calendar-plus"></i> Enqueue Harian Sekarang');
+            }
+        });
+    });
+
+    loadData(true);
 })();
 </script>

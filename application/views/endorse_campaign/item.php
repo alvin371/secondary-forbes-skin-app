@@ -29,6 +29,13 @@ function date_format_indo($date)
     }
     return $date;
 }
+function date_format_indo_datetime($date)
+{
+    if (!$date) {
+        return '-';
+    }
+    return DATE('d/m/Y H:i', strtotime($date));
+}
 foreach ($data as $v) {
 
     if ($v['desc'] == "") {
@@ -44,6 +51,7 @@ foreach ($data as $v) {
                 <p class="mb-1 text-black">PIC : <?= $v['pic'] ?></p>
                 <p class="mb-1 text-black">Produk : <?= $v['product_text'] ? $v['product_text'] : '-' ?></p>
                 <p class="mb-1 text-black">Keterangan : <?= $v['desc'] ?></p>
+                <p class="mb-1 text-black"><span class="fw-600">Latest Update :</span> <?= date_format_indo_datetime($v['latest_update_at'] ?? '') ?></p>
 
                 <?php if (!empty($v['media_file']) && !empty($v['media_type'])) { ?>
                     <div class="mt-2">
