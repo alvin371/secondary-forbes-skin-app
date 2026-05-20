@@ -142,8 +142,8 @@ class Customer extends BaseController
         $data['start_date'] = $start_date;
         $data['until_date'] = $until_date;
         $data['brand'] = $brand;
-        $data['content'] = view("customer/all", $data);
-        return view("TemplateDashboard", $data);
+        $data['content'] = $this->load->view("customer/all", $data, true);
+        $this->load->view("TemplateDashboard", $data);
     }
 
     public function item()
@@ -234,7 +234,7 @@ class Customer extends BaseController
         $data['data'] = $query;
 
         $data['start'] = $offset;
-        return view("customer/item", $data);
+        $this->load->view("customer/item", $data);
     }
 
 
@@ -322,7 +322,7 @@ class Customer extends BaseController
         $query = $query->getResultArray();
         $data['tag'] = $query;
 
-        return view("customer/edit", $data);
+        $this->load->view("customer/edit", $data);
     }
 
     public function update()
@@ -514,7 +514,7 @@ class Customer extends BaseController
         $query = $db->query("SELECT * FROM customer WHERE id = '$id'");
         $query = $query->getResultArray();
         $data['data'] = $query[0];
-        return view("customer/sync", $data);
+        $this->load->view("customer/sync", $data);
     }
 
     public function sync_process()
@@ -563,7 +563,7 @@ class Customer extends BaseController
     {
         $id = $_GET['id'];
         $data['data']['id'] = $id;
-        return view("customer/delete", $data);
+        $this->load->view("customer/delete", $data);
     }
 
     public function delete()

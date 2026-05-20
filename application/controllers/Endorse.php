@@ -2094,7 +2094,8 @@ class Endorse extends BaseController
         $data['campaigns'] = $this->mymodel->selectWithQuery("
             SELECT id, title FROM endorse_campaign WHERE status = 'Aktif' ORDER BY title ASC
         ");
-        return view('endorse/queue', $data);
+        $data['content'] = $this->load->view('endorse/queue', $data, true);
+        $this->load->view('TemplateDashboard', $data);
     }
 
     public function queue_data()
