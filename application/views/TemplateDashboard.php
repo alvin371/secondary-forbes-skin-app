@@ -1154,10 +1154,52 @@ if (!$_SESSION['is_login']) {
           </div>
           
           <div class="d-flex align-items-center justify-content-end gap-4">
-              <a href="<?= base_url() ?>endorse/queue" class="position-relative text-decoration-none" id="endorseQueueLink" title="Endorse Queue">
-                  <i class="bi bi-hourglass-split" id="endorseQueueIcon" style="font-size: 20px; color: #5a7dbaff;"></i>
-                  <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-primary" id="endorseQueueBadge" style="display: none; font-size: 10px; padding: 3px 5px;">0</span>
-              </a>
+              <div class="queue-container" style="position: relative;">
+                  <button class="p-0" onclick="toggleQueuePanel()" style="position: relative; background-color: transparent; border: none;">
+                      <i class="bi bi-hourglass-split" id="endorseQueueIcon" style="font-size: 20px; color: #5a7dbaff;"></i>
+                      <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-primary" id="endorseQueueBadge" style="display: none; font-size: 10px; padding: 3px 5px;">0</span>
+                  </button>
+                  <div class="dropdown-menu p-0" id="endorseQueueDropdown" style="display: none; width: 340px; border: none; box-shadow: 0 4px 20px rgba(0,0,0,0.15); border-radius: 12px; overflow: hidden; right: 1px;">
+                      <div class="d-flex justify-content-between align-items-center p-3" style="background-color: #f8f9fa; border-bottom: 1px solid #eee;">
+                          <div>
+                              <h6 class="mb-0 fw-bold" style="font-size: 15px;">Endorse Queue</h6>
+                              <small class="text-muted" id="queueAutoSchedule">Setiap hari 01:00 WIB</small>
+                          </div>
+                          <span class="badge bg-secondary" id="queueWorkerState">Idle</span>
+                      </div>
+                      <div class="p-3">
+                          <div class="d-flex justify-content-between mb-2">
+                              <span class="text-muted">Active Queue</span>
+                              <span class="fw-bold" id="queuePanelActive">0</span>
+                          </div>
+                          <div class="row text-center mb-2">
+                              <div class="col-3">
+                                  <div class="small text-muted">Pending</div>
+                                  <div class="fw-bold" id="queuePanelPending">0</div>
+                              </div>
+                              <div class="col-3">
+                                  <div class="small text-muted">Process</div>
+                                  <div class="fw-bold" id="queuePanelProcessing">0</div>
+                              </div>
+                              <div class="col-3">
+                                  <div class="small text-muted">Done</div>
+                                  <div class="fw-bold" id="queuePanelCompleted">0</div>
+                              </div>
+                              <div class="col-3">
+                                  <div class="small text-muted">Failed</div>
+                                  <div class="fw-bold" id="queuePanelFailed">0</div>
+                              </div>
+                          </div>
+                          <div class="small text-muted mb-1">Last Activity: <span id="queueLastActivity">-</span></div>
+                          <div class="small text-muted mb-3">Last Completed: <span id="queueLastCompleted">-</span></div>
+                          <div class="d-grid gap-2">
+                              <a href="<?= base_url() ?>endorse/queue" class="btn btn-sm btn-primary">Buka Queue</a>
+                              <button type="button" class="btn btn-sm btn-edit" id="queueEnqueueDailyBtn" onclick="runQueueDailyEnqueue()">Enqueue Harian Sekarang</button>
+                              <button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadEndorseQueueBadge(true)">Reload Status</button>
+                          </div>
+                      </div>
+                  </div>
+              </div>
               <!-- Notification Bell -->
               <div class="notification-container" style="position: relative; margin-right: 10px;">
                   <button class="p-0" onclick="toggleNotifications()" style="position: relative; background-color: transparent; border: none;">
@@ -1255,6 +1297,10 @@ if (!$_SESSION['is_login']) {
       </footer> -->
   </main>
   <style>
+  .queue-container .dropdown-menu.show-queue-panel {
+      display: block !important;
+  }
+
   .notification-container {
       position: relative;
       margin-right: 15px;
@@ -1447,6 +1493,7 @@ if (!$_SESSION['is_login']) {
 
   <script>
     let notificationDropdownOpen = false;
+    let queueDropdownOpen = false;
 
     function toggleNotifications() {
         const dropdown = $('#notificationDropdown');
@@ -1461,11 +1508,28 @@ if (!$_SESSION['is_login']) {
         }
     }
 
+    function toggleQueuePanel() {
+        const dropdown = $('#endorseQueueDropdown');
+        if (queueDropdownOpen) {
+            dropdown.removeClass('show-queue-panel');
+            queueDropdownOpen = false;
+        } else {
+            dropdown.addClass('show-queue-panel');
+            queueDropdownOpen = true;
+            loadEndorseQueueBadge(true);
+        }
+    }
+
     $(document).on('click', function(event) {
         const container = $('.notification-container');
         if (!container.is(event.target) && !container.has(event.target).length && notificationDropdownOpen) {
             $('#notificationDropdown').hide();
             notificationDropdownOpen = false;
+        }
+        const queueContainer = $('.queue-container');
+        if (!queueContainer.is(event.target) && !queueContainer.has(event.target).length && queueDropdownOpen) {
+            $('#endorseQueueDropdown').removeClass('show-queue-panel');
+            queueDropdownOpen = false;
         }
     });
 
@@ -1637,7 +1701,7 @@ if (!$_SESSION['is_login']) {
             }
         });
 
-        loadEndorseQueueBadge();
+        loadEndorseQueueBadge(false);
     });
 
     setInterval(function() {
@@ -1658,10 +1722,21 @@ if (!$_SESSION['is_login']) {
               console.error('Error auto-refreshing notification count:', error);
           }
       });
-      loadEndorseQueueBadge();
+      loadEndorseQueueBadge(false);
     }, 30000);
 
-    function loadEndorseQueueBadge() {
+    function formatQueueDateTime(value) {
+      if (!value) return '-';
+      if (typeof moment !== 'undefined') {
+        const date = moment(value);
+        if (date.isValid()) {
+          return date.format('DD/MM/YYYY HH:mm');
+        }
+      }
+      return value;
+    }
+
+    function loadEndorseQueueBadge(showPanelFeedback) {
       $.ajax({
           url: '<?= base_url("endorse/queue-count") ?>',
           method: 'GET',
@@ -1680,7 +1755,55 @@ if (!$_SESSION['is_login']) {
 
               badge.removeClass('bg-primary bg-warning').addClass(stalled ? 'bg-warning' : 'bg-primary');
               icon.css('color', stalled ? '#c58a00' : '#5a7dbaff');
+
+              var summary = data.summary || {};
+              var health = data.health || {};
+              $('#queuePanelActive').text(count);
+              $('#queuePanelPending').text(summary.pending || 0);
+              $('#queuePanelProcessing').text(summary.processing || 0);
+              $('#queuePanelCompleted').text(summary.completed || 0);
+              $('#queuePanelFailed').text(summary.failed || 0);
+              $('#queueWorkerState')
+                .text(data.worker_status || (stalled ? 'Stalled' : 'Idle'))
+                .removeClass('bg-secondary bg-warning bg-primary')
+                .addClass(stalled ? 'bg-warning' : ((health.processing_total || 0) > 0 ? 'bg-primary' : 'bg-secondary'));
+              $('#queueLastActivity').text(formatQueueDateTime(data.last_activity_at || health.last_started_at || health.oldest_pending_at));
+              $('#queueLastCompleted').text(formatQueueDateTime((health && health.last_completed_at) ? health.last_completed_at : null));
+              $('#queueAutoSchedule').text(data.auto_enqueue_schedule || 'Setiap hari 01:00 WIB');
           }
+      });
+    }
+
+    function runQueueDailyEnqueue() {
+      var btn = $('#queueEnqueueDailyBtn');
+      btn.prop('disabled', true).text('Memproses...');
+      $.ajax({
+        url: '<?= base_url("endorse/queue-enqueue-daily") ?>',
+        method: 'POST',
+        dataType: 'json',
+        success: function(data) {
+          var summary = data.data || {};
+          var msg = (data.msg || 'Enqueue harian selesai.') + '\n'
+            + 'Campaign: ' + (summary.processed_campaigns || 0) + '/' + (summary.campaign_total || 0) + '\n'
+            + 'Enqueued: ' + (summary.enqueued || 0) + '\n'
+            + 'Duplicate: ' + (summary.skipped_duplicates || 0);
+          if (typeof Swal !== 'undefined') {
+            Swal.fire({ icon: 'success', title: 'Queue Daily', text: msg });
+          } else {
+            alert(msg);
+          }
+          loadEndorseQueueBadge(true);
+        },
+        error: function() {
+          if (typeof Swal !== 'undefined') {
+            Swal.fire({ icon: 'error', title: 'Queue Daily', text: 'Gagal menjalankan enqueue harian.' });
+          } else {
+            alert('Gagal menjalankan enqueue harian.');
+          }
+        },
+        complete: function() {
+          btn.prop('disabled', false).text('Enqueue Harian Sekarang');
+        }
       });
     }
   </script>

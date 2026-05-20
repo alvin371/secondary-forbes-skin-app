@@ -100,6 +100,7 @@ $route['endorse/queue'] = 'Endorse/queue';
 $route['endorse/queue-data'] = 'Endorse/queue_data';
 $route['endorse/queue-history'] = 'Endorse/queue_history';
 $route['endorse/queue-count'] = 'Endorse/queue_count';
+$route['endorse/queue-enqueue-daily'] = 'Endorse/queue_enqueue_daily';
 $route['endorse/force-retry'] = 'Endorse/force_retry';
 $route['endorse/clear-queue'] = 'Endorse/clear_queue';
 

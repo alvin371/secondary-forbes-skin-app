@@ -34,6 +34,7 @@ class Endorse extends BaseController
             'queue_data' => 'view',
             'queue_history' => 'view',
             'queue_count' => 'view',
+            'queue_enqueue_daily' => 'edit',
             'get_tiktok_photo_images' => 'view',
             'get_tiktok_video_play' => 'view'
         ]);
@@ -2102,6 +2103,7 @@ class Endorse extends BaseController
     {
         $id_campaign  = intval($this->input->get_post('id_campaign'));
         $statusParam  = $this->input->get_post('status');
+        $keyword      = trim((string) $this->input->get_post('keyword'));
         $since_hours  = intval($this->input->get_post('since_hours'));
         $since_hours  = ($since_hours >= 0 && $since_hours <= 720) ? $since_hours : 168;
         $start        = max(0, intval($this->input->get_post('start')));
@@ -2136,6 +2138,16 @@ class Endorse extends BaseController
                 $where[] = "q.status IN ($list)";
             }
         }
+        if ($keyword !== '') {
+            $keywordEsc = $this->db->escape_like_str($keyword);
+            $where[] = "(
+                ec.title LIKE '%$keywordEsc%'
+                OR i.full_name LIKE '%$keywordEsc%'
+                OR q.link_upload LIKE '%$keywordEsc%'
+                OR q.platform LIKE '%$keywordEsc%'
+                OR q.error_message LIKE '%$keywordEsc%'
+            )";
+        }
         $whereSql = 'WHERE ' . implode(' AND ', $where);
 
         $totalRows = $this->mymodel->selectWithQuery("SELECT COUNT(*) c FROM endorse_refresh_queue q $whereSql");
@@ -2147,6 +2159,12 @@ class Endorse extends BaseController
                    q.created_at, q.started_at, q.completed_at, q.retry_source_id,
                    q.created_at AS queued_at,
                    $activityExpr AS activity_at,
+                   (FLOOR((
+                       SELECT COUNT(*)
+                       FROM endorse e2
+                       WHERE e2.id_campaign = q.id_campaign
+                         AND e2.id > q.id_endorse
+                   ) / 30) + 1) AS endorse_page,
                    ec.title AS campaign_title,
                    i.full_name AS influencer_name
             FROM endorse_refresh_queue q
@@ -2167,6 +2185,27 @@ class Endorse extends BaseController
         }
 
         $health = $this->endorserefreshqueueservice->computeHealth($id_campaign, 10);
+        $workerStatus = 'Idle';
+        if (!empty($health['is_stalled'])) {
+            $workerStatus = 'Stalled';
+        } elseif (intval($health['processing_total'] ?? 0) > 0) {
+            $workerStatus = 'Processing';
+        } elseif (intval($health['pending_total'] ?? 0) > 0) {
+            $workerStatus = 'Queued';
+        }
+        $lastActivityAt = $health['last_started_at'] ?: $health['last_completed_at'] ?: $health['oldest_pending_at'] ?: null;
+
+        foreach ($rows as &$row) {
+            $queueCampaignId = intval($row['id_campaign'] ?? 0);
+            $endorseId = intval($row['id_endorse'] ?? 0);
+            if ($queueCampaignId > 0 && $endorseId > 0) {
+                $page = max(1, intval($row['endorse_page'] ?? 1));
+                $row['redirect_url'] = base_url() . 'endorse?id_campaign=' . $queueCampaignId . '&page=' . $page . '&highlight_endorse=' . $endorseId;
+            } else {
+                $row['redirect_url'] = '';
+            }
+        }
+        unset($row);
 
         return $this->send_json_response([
             'recordsTotal'    => $total,
@@ -2174,6 +2213,9 @@ class Endorse extends BaseController
             'data'            => $rows,
             'summary'         => $summary,
             'health'          => $health,
+            'worker_status'   => $workerStatus,
+            'last_activity_at' => $lastActivityAt,
+            'auto_enqueue_schedule' => 'Setiap hari 01:00 WIB',
         ]);
     }
 
@@ -2197,10 +2239,79 @@ class Endorse extends BaseController
     public function queue_count()
     {
         $health = $this->endorserefreshqueueservice->computeHealth(0, 10);
+        $summaryRows = $this->mymodel->selectWithQuery("
+            SELECT status, COUNT(*) AS c
+            FROM endorse_refresh_queue
+            GROUP BY status
+        ");
+        $summary = ['pending' => 0, 'processing' => 0, 'completed' => 0, 'failed' => 0];
+        foreach ($summaryRows as $row) {
+            $status = strval($row['status'] ?? '');
+            if (isset($summary[$status])) {
+                $summary[$status] = intval($row['c'] ?? 0);
+            }
+        }
+
+        $lastActivityAt = $health['last_started_at'] ?: $health['last_completed_at'] ?: $health['oldest_pending_at'] ?: null;
+        $workerStatus = 'Idle';
+        if (!empty($health['is_stalled'])) {
+            $workerStatus = 'Stalled';
+        } elseif (intval($health['processing_total'] ?? 0) > 0) {
+            $workerStatus = 'Processing';
+        } elseif (intval($health['pending_total'] ?? 0) > 0) {
+            $workerStatus = 'Queued';
+        }
+
         return $this->send_json_response([
             'count' => intval($health['active_total'] ?? 0),
             'stalled' => !empty($health['is_stalled']),
-            'oldest_pending_at' => $health['oldest_pending_at'] ?? null
+            'oldest_pending_at' => $health['oldest_pending_at'] ?? null,
+            'summary' => $summary,
+            'health' => $health,
+            'worker_status' => $workerStatus,
+            'last_activity_at' => $lastActivityAt,
+            'auto_enqueue_schedule' => 'Setiap hari 01:00 WIB'
+        ]);
+    }
+
+    public function queue_enqueue_daily()
+    {
+        if (strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+            return $this->send_json_response(['status' => false, 'msg' => 'Method tidak diizinkan.'], 405);
+        }
+
+        $campaigns = $this->mymodel->selectWithQuery("
+            SELECT id
+            FROM endorse_campaign
+            WHERE status = 'Aktif'
+            ORDER BY id ASC
+        ");
+
+        $summary = [
+            'campaign_total' => count($campaigns),
+            'processed_campaigns' => 0,
+            'enqueued' => 0,
+            'skipped_duplicates' => 0,
+            'excluded_known_url' => 0,
+        ];
+
+        foreach ($campaigns as $campaign) {
+            $id_campaign = intval($campaign['id'] ?? 0);
+            if ($id_campaign <= 0) {
+                continue;
+            }
+
+            $result = $this->endorserefreshqueueservice->enqueueCampaign($id_campaign, intval($_SESSION['user']['id'] ?? 0));
+            $summary['processed_campaigns']++;
+            $summary['enqueued'] += intval($result['enqueued'] ?? 0);
+            $summary['skipped_duplicates'] += intval($result['skipped_duplicates'] ?? 0);
+            $summary['excluded_known_url'] += intval($result['excluded_known_url'] ?? 0);
+        }
+
+        return $this->send_json_response([
+            'status' => true,
+            'msg' => 'Enqueue harian selesai untuk semua campaign aktif.',
+            'data' => $summary
         ]);
     }
 
