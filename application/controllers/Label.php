@@ -18,8 +18,8 @@ class Label extends BaseController
         $data['data'] = $query;
 
 
-        $data['content'] = view("label/all", $data);
-        return view("TemplateDashboard", $data);
+        $data['content'] = $this->load->view("label/all", $data, true);
+        $this->load->view("TemplateDashboard", $data);
     }
 
     public function edit()
@@ -30,7 +30,7 @@ class Label extends BaseController
         $query = $query->getResultArray();
         $data['data'] = $query[0];
 
-        return view("label/edit", $data);
+        $this->load->view("label/edit", $data);
     }
 
     public function update()
@@ -88,7 +88,7 @@ class Label extends BaseController
     {
         $data['data'] = array();
 
-        return view("label/create", $data);
+        $this->load->view("label/create", $data);
     }
 
 
@@ -147,7 +147,7 @@ class Label extends BaseController
     {
         $id = $_GET['id'];
         $data['data']['id'] = $id;
-        return view("label/delete", $data);
+        $this->load->view("label/delete", $data);
     }
 
     public function delete()

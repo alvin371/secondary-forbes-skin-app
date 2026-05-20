@@ -54,7 +54,7 @@ class Ajax extends CI_Controller
 	public function sync()
 	{
 		$data['table'] = $_GET['table'];
-		return view("Sync", $data);
+		$this->load->view("Sync", $data);
 	}
 
 	function checkbox()

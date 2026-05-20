@@ -18,8 +18,8 @@ class Discount extends BaseController
         $data['data'] = $query;
 
 
-        $data['content'] = view("discount/all", $data);
-        return view("TemplateDashboard", $data);
+        $data['content'] = $this->load->view("discount/all", $data, true);
+        $this->load->view("TemplateDashboard", $data);
     }
 
     public function edit()
@@ -29,7 +29,7 @@ class Discount extends BaseController
         $query = $db->query("SELECT * FROM discount WHERE id = '$id'");
         $query = $query->getResultArray();
         $data['data'] = $query[0];
-        return view("discount/edit", $data);
+        $this->load->view("discount/edit", $data);
     }
 
     public function update()
@@ -87,7 +87,7 @@ class Discount extends BaseController
     {
         $data['data'] = array();
 
-        return view("discount/create", $data);
+        $this->load->view("discount/create", $data);
     }
 
 
@@ -146,7 +146,7 @@ class Discount extends BaseController
     {
         $id = $_GET['id'];
         $data['data']['id'] = $id;
-        return view("discount/delete", $data);
+        $this->load->view("discount/delete", $data);
     }
 
     public function delete()
