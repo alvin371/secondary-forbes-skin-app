@@ -774,6 +774,80 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
             </script>
         </div>
     </div>
+    <!-- Analytics Summary Panel -->
+    <div class="col-lg-12 mb-3" id="analytics-panel">
+        <div class="card">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <h3 class="text-primary fw-600 mb-0">Analytics</h3>
+                <a href="<?= base_url() ?>endorse/analytics?id_campaign=<?= $detail['id'] ?>&start_date=&until_date=" id="analytics-full-link" class="btn btn-sm btn-outline-primary">
+                    Lihat Analytics Lengkap <i class="bi bi-arrow-right"></i>
+                </a>
+            </div>
+            <div class="row" id="analytics-kpi-row">
+                <div class="col-md-3 col-6 mb-2">
+                    <div class="border rounded p-2 text-center h-100" style="cursor:pointer" onclick="goAnalytics()">
+                        <div class="fs-12 text-muted">Missing Data</div>
+                        <div id="kpi-missing" class="fw-700 fs-20 text-danger"><i class="fa fa-circle-o-notch fa-spin fs-14"></i></div>
+                        <div class="fs-11 text-muted">creator ≥ 2 hari tanpa log</div>
+                    </div>
+                </div>
+                <div class="col-md-3 col-6 mb-2">
+                    <div class="border rounded p-2 text-center h-100" style="cursor:pointer" onclick="goAnalytics()">
+                        <div class="fs-12 text-muted">Top Performer</div>
+                        <div id="kpi-top-creator" class="fw-600 fs-14 text-truncate"><i class="fa fa-circle-o-notch fa-spin fs-14"></i></div>
+                        <div id="kpi-top-views" class="fs-12 text-success">-</div>
+                    </div>
+                </div>
+                <div class="col-md-3 col-6 mb-2">
+                    <div class="border rounded p-2 text-center h-100" style="cursor:pointer" onclick="goAnalytics()">
+                        <div class="fs-12 text-muted">Anomali Terdeteksi</div>
+                        <div id="kpi-anomaly" class="fw-700 fs-20 text-warning"><i class="fa fa-circle-o-notch fa-spin fs-14"></i></div>
+                        <div class="fs-11 text-muted">hari dengan data mencurigakan</div>
+                    </div>
+                </div>
+                <div class="col-md-3 col-6 mb-2">
+                    <div class="border rounded p-2 text-center h-100" style="cursor:pointer" onclick="goAnalytics()">
+                        <div class="fs-12 text-muted">Rata-rata Views/Hari</div>
+                        <div id="kpi-avg-views" class="fw-700 fs-20 text-primary"><i class="fa fa-circle-o-notch fa-spin fs-14"></i></div>
+                        <div class="fs-11 text-muted">pada rentang tanggal dipilih</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        function goAnalytics() {
+            var start = $('#chart_start_date').val() || '';
+            var until = $('#chart_until_date').val() || '';
+            window.open('<?= base_url() ?>endorse/analytics?id_campaign=<?= $detail['id'] ?>&start_date=' + start + '&until_date=' + until, '_blank');
+        }
+
+        function numberFmt(n) {
+            if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+            if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+            return n;
+        }
+
+        function loadAnalyticsSummary() {
+            var start = $('#chart_start_date').val() || '';
+            var until = $('#chart_until_date').val() || '';
+            var id = '<?= $detail['id'] ?>';
+            $('#analytics-full-link').attr('href', '<?= base_url() ?>endorse/analytics?id_campaign=' + id + '&start_date=' + start + '&until_date=' + until);
+            $.getJSON('<?= base_url() ?>ajax/analytics-summary?id_campaign=' + id + '&start_date=' + start + '&until_date=' + until, function(d) {
+                $('#kpi-missing').html(d.missing_count > 0 ? '<span class="text-danger">' + d.missing_count + '</span>' : '<span class="text-success">0</span>');
+                $('#kpi-top-creator').text(d.top_creator || '-');
+                $('#kpi-top-views').text(d.top_creator_views > 0 ? numberFmt(d.top_creator_views) + ' views' : '-');
+                $('#kpi-anomaly').html(d.anomaly_count > 0 ? '<span class="text-warning">' + d.anomaly_count + '</span>' : '<span class="text-success">0</span>');
+                $('#kpi-avg-views').text(numberFmt(d.avg_daily_views));
+            });
+        }
+
+        $(document).ready(function() {
+            // Delay slightly so chart_start_date hidden inputs are set first
+            setTimeout(loadAnalyticsSummary, 800);
+        });
+    </script>
+
     <a href="#!" onclick="create('<?= $detail['id'] ?>')" class="btn btn-primary mt-0 mb-2"><i class="bi bi-plus-circle-dotted fs-16"></i> Tambah Konten</a>
 
     <tr>
@@ -1354,14 +1428,19 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
             $.ajax({
                 url: '<?= base_url() ?>endorse/bulk-refresh',
                 method: 'POST',
-                data: { id_campaign: id },
+                data: {
+                    id_campaign: id
+                },
                 dataType: 'json',
                 success: function(resp) {
                     const queueUrl = '<?= base_url() ?>endorse/queue?id_campaign=' + id;
                     if (resp && resp.status) {
                         const msg = resp.msg || ('Antrian dibuat: ' + resp.enqueued + ' baru, ' + resp.skipped_duplicates + ' sudah ada.');
                         if (typeof toastr !== 'undefined') {
-                            toastr.success(msg + ' <a href="' + queueUrl + '" class="text-white text-underline"><b>Lihat antrian →</b></a>', '', { timeOut: 7000, escapeHtml: false });
+                            toastr.success(msg + ' <a href="' + queueUrl + '" class="text-white text-underline"><b>Lihat antrian →</b></a>', '', {
+                                timeOut: 7000,
+                                escapeHtml: false
+                            });
                         } else {
                             if (confirm(msg + '\n\nBuka halaman antrian sekarang?')) window.location.href = queueUrl;
                         }
@@ -1604,7 +1683,10 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
             }
 
             target.classList.add('endorse-highlight');
-            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            target.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center'
+            });
             window.setTimeout(function() {
                 target.classList.remove('endorse-highlight');
             }, 3200);

@@ -4487,6 +4487,26 @@ class Endorse extends BaseController
         $this->load->view("endorse/generate_mou_form", $data);
     }
 
+    public function analytics()
+    {
+        $data['template'] = $this->template;
+        $data['title']    = 'Analytics - ' . $this->template->title();
+
+        $id_campaign = $this->db->escape_str($_GET['id_campaign']);
+        $detail = $this->mymodel->selectWithQuery("SELECT * FROM endorse_campaign WHERE id = '$id_campaign'");
+        if (empty($detail)) {
+            redirect(base_url() . 'endorse-campaign');
+        }
+        $data['detail'] = $detail[0];
+
+        $data['start_date']  = $_GET['start_date']  ?: date('Y-m-01');
+        $data['until_date']  = $_GET['until_date']  ?: date('Y-m-d');
+        $data['id_campaign'] = $id_campaign;
+
+        $data['content'] = $this->load->view('endorse/analytics', $data, true);
+        $this->load->view('TemplateDashboard', $data);
+    }
+
     // =================
     // HELPER MINI UTILS
     // =================
