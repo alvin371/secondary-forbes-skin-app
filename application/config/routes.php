@@ -95,6 +95,12 @@ $route['googlemou/oauth2callback']              = 'googlemou/oauth2callback';
 $route['googlemou']                             = 'googlemou/index';
 
 $route['ajax/refresh-campaign-endorses'] = 'Ajax/refresh_campaign_endorses';
+$route['ajax/analytics-summary']     = 'Ajax/get_analytics_summary';
+$route['ajax/missing-creators']      = 'Ajax/get_missing_creators';
+$route['ajax/performers-ranking']    = 'Ajax/get_performers_ranking';
+$route['ajax/creator-trends']        = 'Ajax/get_creator_trends';
+$route['ajax/anomalies']             = 'Ajax/get_anomalies';
+$route['endorse/analytics'] = 'Endorse/analytics';
 $route['endorse/bulk-refresh'] = 'Endorse/bulk_refresh';
 $route['endorse/queue'] = 'Endorse/queue';
 $route['endorse/queue-data'] = 'Endorse/queue_data';

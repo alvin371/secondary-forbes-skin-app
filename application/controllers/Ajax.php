@@ -364,44 +364,87 @@ class Ajax extends CI_Controller
 		}
 
 		// ===== Agregasi per hari dari logs =====
-        if ($is_dashboard != 'true') {
-            $sql_list = "
-                SELECT 
-                    SUM(endorse_logs.likes_after)        AS likes, 
-                    SUM(endorse_logs.comment_after)      AS comment,
-                    SUM(endorse_logs.share_save_after)   AS share_save, 
-                    SUM(endorse_logs.views_after)        AS views,
-                    SUM(endorse_logs.total_cost)         AS cost, 
-                    COUNT(endorse_logs.id)               AS endorse, 
-                    $qry_opt                              AS opt
-                FROM endorse_logs
-                INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse 
-                INNER JOIN endorse_campaign ON endorse_campaign.id = endorse.id_campaign
-                WHERE endorse_logs.id_campaign = '$id_campaign' 
-                $qry_list 
-                $qry_common_for_logs 
-                $group
-                ORDER BY DATE(endorse_logs.date) ASC
-            ";
+        if ($checkbox[0] == 'true') {
+            // Delta mode: sum per-record diff to avoid cross-day negatives
+            if ($is_dashboard != 'true') {
+                $sql_list = "
+                    SELECT
+                        SUM(endorse_logs.likes_after   - endorse_logs.likes_before)       AS likes,
+                        SUM(endorse_logs.comment_after - endorse_logs.comment_before)     AS comment,
+                        SUM(endorse_logs.share_save_after - endorse_logs.share_save_before) AS share_save,
+                        SUM(endorse_logs.views_after   - endorse_logs.views_before)       AS views,
+                        SUM(endorse_logs.total_cost)                                      AS cost,
+                        COUNT(endorse_logs.id)                                            AS endorse,
+                        $qry_opt                                                           AS opt
+                    FROM endorse_logs
+                    INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
+                    INNER JOIN endorse_campaign ON endorse_campaign.id = endorse.id_campaign
+                    WHERE endorse_logs.id_campaign = '$id_campaign'
+                    $qry_list
+                    $qry_common_for_logs
+                    $group
+                    ORDER BY DATE(endorse_logs.date) ASC
+                ";
+            } else {
+                $sql_list = "
+                    SELECT
+                        SUM(endorse_logs.likes_after   - endorse_logs.likes_before)       AS likes,
+                        SUM(endorse_logs.comment_after - endorse_logs.comment_before)     AS comment,
+                        SUM(endorse_logs.share_save_after - endorse_logs.share_save_before) AS share_save,
+                        SUM(endorse_logs.views_after   - endorse_logs.views_before)       AS views,
+                        SUM(endorse_logs.total_cost)                                      AS cost,
+                        COUNT(endorse_logs.id)                                            AS endorse,
+                        $qry_opt                                                           AS opt
+                    FROM endorse_logs
+                    INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
+                    INNER JOIN endorse_campaign ON endorse_campaign.id = endorse.id_campaign
+                    WHERE 1=1
+                    $qry_list
+                    $qry_common_for_logs
+                    $group
+                    ORDER BY DATE(endorse_logs.date) ASC
+                ";
+            }
         } else {
-            $sql_list = "
-                SELECT 
-                    SUM(endorse_logs.likes_after)        AS likes, 
-                    SUM(endorse_logs.comment_after)      AS comment,
-                    SUM(endorse_logs.share_save_after)   AS share_save, 
-                    SUM(endorse_logs.views_after)        AS views,
-                    SUM(endorse_logs.total_cost)         AS cost,
-                    COUNT(endorse_logs.id)               AS endorse, 
-                    $qry_opt                              AS opt
-                FROM endorse_logs
-                INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse  
-                INNER JOIN endorse_campaign ON endorse_campaign.id = endorse.id_campaign
-                WHERE 1=1 
-                $qry_list 
-                $qry_common_for_logs 
-                $group
-                ORDER BY DATE(endorse_logs.date) ASC
-            ";
+            if ($is_dashboard != 'true') {
+                $sql_list = "
+                    SELECT
+                        SUM(endorse_logs.likes_after)        AS likes,
+                        SUM(endorse_logs.comment_after)      AS comment,
+                        SUM(endorse_logs.share_save_after)   AS share_save,
+                        SUM(endorse_logs.views_after)        AS views,
+                        SUM(endorse_logs.total_cost)         AS cost,
+                        COUNT(endorse_logs.id)               AS endorse,
+                        $qry_opt                              AS opt
+                    FROM endorse_logs
+                    INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
+                    INNER JOIN endorse_campaign ON endorse_campaign.id = endorse.id_campaign
+                    WHERE endorse_logs.id_campaign = '$id_campaign'
+                    $qry_list
+                    $qry_common_for_logs
+                    $group
+                    ORDER BY DATE(endorse_logs.date) ASC
+                ";
+            } else {
+                $sql_list = "
+                    SELECT
+                        SUM(endorse_logs.likes_after)        AS likes,
+                        SUM(endorse_logs.comment_after)      AS comment,
+                        SUM(endorse_logs.share_save_after)   AS share_save,
+                        SUM(endorse_logs.views_after)        AS views,
+                        SUM(endorse_logs.total_cost)         AS cost,
+                        COUNT(endorse_logs.id)               AS endorse,
+                        $qry_opt                              AS opt
+                    FROM endorse_logs
+                    INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
+                    INNER JOIN endorse_campaign ON endorse_campaign.id = endorse.id_campaign
+                    WHERE 1=1
+                    $qry_list
+                    $qry_common_for_logs
+                    $group
+                    ORDER BY DATE(endorse_logs.date) ASC
+                ";
+            }
         }
 		$list = $this->mymodel->selectWithQuery($sql_list);
 		if (empty($list)) $list = array();
@@ -457,56 +500,14 @@ class Ajax extends CI_Controller
 
 		$val_arr_1 = $val_arr_2 = $val_arr_3 = $val_arr_4 = $val_arr_5 = array();
 
-		// ===== Baseline D-1 untuk mode SELISIH =====
-		$baseline_views = 0;
-		$baseline_eng   = 0;
-		$baseline_cost  = 0;
-		$baseline_end   = 0;
-		$baseline_likes = 0;
-		$baseline_comment = 0;
-		$baseline_share_save = 0;
-
-		if ($checkbox[0] == 'true') {
-            $sql_base = "
-                SELECT
-                    SUM(endorse_logs.views_after)                                        AS views,
-                    SUM(endorse_logs.likes_after)                                        AS likes,
-                    SUM(endorse_logs.comment_after)                                      AS comment,
-                    SUM(endorse_logs.share_save_after)                                   AS share_save,
-                    SUM(endorse_logs.likes_after + endorse_logs.comment_after + endorse_logs.share_save_after) AS engagement,
-                    SUM(endorse_logs.total_cost)                                         AS cost,
-                    COUNT(endorse_logs.id)                                               AS endorse,
-                    DATE(endorse_logs.date)                                              AS opt
-                FROM endorse_logs
-                INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
-                INNER JOIN endorse_campaign ON endorse_campaign.id = endorse.id_campaign
-                WHERE DATE(endorse_logs.date) < '$start_date'
-                $qry_list
-                $qry_common_for_logs
-                GROUP BY DATE(endorse_logs.date)
-                ORDER BY DATE(endorse_logs.date) DESC
-                LIMIT 1
-            ";
-			$base = $this->mymodel->selectWithQuery($sql_base);
-			if (!empty($base)) {
-				$baseline_views = (int)$base[0]['views'];
-				$baseline_likes = (int)$base[0]['likes'];
-				$baseline_comment = (int)$base[0]['comment'];
-				$baseline_share_save = (int)$base[0]['share_save'];
-				$baseline_eng   = (int)$base[0]['engagement'];
-				$baseline_cost  = (float)$base[0]['cost'];
-				$baseline_end   = (int)$base[0]['endorse'];
-			}
-		}
-
-		// Inisialisasi prev_* dari baseline (delta) atau 0 (kumulatif)
-		$prev_views      = ($checkbox[0] == 'true') ? $baseline_views : 0;
-		$prev_engagement = ($checkbox[0] == 'true') ? $baseline_eng   : 0;
-		$prev_cost       = ($checkbox[0] == 'true') ? $baseline_cost  : 0;
-		$prev_endorse    = ($checkbox[0] == 'true') ? $baseline_end   : 0;
-		$prev_likes      = ($checkbox[0] == 'true') ? $baseline_likes : 0;
-		$prev_comment    = ($checkbox[0] == 'true') ? $baseline_comment : 0;
-		$prev_share_save = ($checkbox[0] == 'true') ? $baseline_share_save : 0;
+		// Prev trackers for cumulative mode
+		$prev_views      = 0;
+		$prev_engagement = 0;
+		$prev_cost       = 0;
+		$prev_endorse    = 0;
+		$prev_likes      = 0;
+		$prev_comment    = 0;
+		$prev_share_save = 0;
 
 		// ===== Akumulator delta untuk summary Daily =====
 		$sum_delta_views = 0;
@@ -529,31 +530,14 @@ class Ajax extends CI_Controller
 			}
 
 			if ($checkbox[0] == 'true') {
-				// Hitung SELISIH untuk semua hari vs prev/baseline
-				$current_views      = $v['val_1'];
-				$current_engagement = $v['val_3'];
-				$current_cost       = $v['val_4'];
-				$current_endorse    = $v['val_5'];
-				$current_likes      = $v['val_likes'];
-				$current_comment    = $v['val_comment'];
-				$current_share_save = $v['val_share_save'];
-
-				// Tampilkan selisih views apa adanya (termasuk minus)
-				$v['val_1'] = ($current_views - $prev_views);
-				$v['val_3'] = ($current_engagement - $prev_engagement);
-				$v['val_4'] = ($current_cost       - $prev_cost);
-				$v['val_5'] = ($current_endorse    - $prev_endorse);
-				$v['val_likes'] = ($current_likes - $prev_likes);
-				$v['val_comment'] = ($current_comment - $prev_comment);
-				$v['val_share_save'] = ($current_share_save - $prev_share_save);
-
+				// Delta mode: values from query are already per-record diffs summed per day
 				if ($v['val_4'] > 0 && $v['val_1'] > 0) {
 					$v['val_2'] = ($v['val_4'] / $v['val_1']) * 1000;
 				} else {
 					$v['val_2'] = 0;
 				}
 
-				// AKUMULASI delta untuk summary (SELALU masuk summary meskipun tidak dicentang)
+				// AKUMULASI delta untuk summary
 				$sum_delta_views += $v['val_1'];
 				$sum_delta_eng   += $v['val_3'];
 				$sum_delta_cost  += $v['val_4'];
@@ -561,15 +545,6 @@ class Ajax extends CI_Controller
 				$sum_delta_likes += $v['val_likes'];
 				$sum_delta_comment += $v['val_comment'];
 				$sum_delta_share_save += $v['val_share_save'];
-
-				// Update prev_* untuk iterasi berikut
-				$prev_views      = $current_views;
-				$prev_engagement = $current_engagement;
-				$prev_cost       = $current_cost;
-				$prev_endorse    = $current_endorse;
-				$prev_likes      = $current_likes;
-				$prev_comment    = $current_comment;
-				$prev_share_save = $current_share_save;
 			} else {
 				// Mode kumulatif
 				$prev_views      = $v['val_1'];
@@ -7206,6 +7181,279 @@ gradient_5.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 		}
 
 		return $result;
+	}
+
+	// =============================================
+	// ANALYTICS ENDPOINTS
+	// =============================================
+
+	public function get_analytics_summary()
+	{
+		$id_campaign  = $this->db->escape_str($_GET['id_campaign']);
+		$start_date   = $this->db->escape_str($_GET['start_date'] ?: date('Y-m-01'));
+		$until_date   = $this->db->escape_str($_GET['until_date']  ?: date('Y-m-d'));
+
+		// Missing creators (no log in last 2 days)
+		$missing = $this->mymodel->selectWithQuery("
+			SELECT COUNT(DISTINCT e.id) AS cnt
+			FROM endorse e
+			LEFT JOIN endorse_logs el ON el.id_endorse = e.id
+			WHERE e.id_campaign = '$id_campaign'
+			  AND e.status NOT IN ('Done','Reject','REJECT')
+			GROUP BY e.id
+			HAVING MAX(DATE(el.date)) IS NULL OR DATEDIFF(CURDATE(), MAX(DATE(el.date))) >= 2
+		");
+		$missing_count = count($missing);
+
+		// Avg daily views gain over range
+		$trends_raw = $this->mymodel->selectWithQuery("
+			SELECT DATE(el.date) AS log_date,
+			       SUM(el.views_after - el.views_before) AS daily_views
+			FROM endorse e
+			INNER JOIN endorse_logs el ON el.id_endorse = e.id
+			WHERE e.id_campaign = '$id_campaign'
+			  AND DATE(el.date) BETWEEN '$start_date' AND '$until_date'
+			GROUP BY DATE(el.date)
+		");
+		$total_days   = count($trends_raw);
+		$total_views  = array_sum(array_column($trends_raw, 'daily_views'));
+		$avg_daily    = $total_days > 0 ? round($total_views / $total_days) : 0;
+
+		// Top performer
+		$top = $this->mymodel->selectWithQuery("
+			SELECT e.nama_creator,
+			       COALESCE(SUM(el.views_after - el.views_before), 0) AS views_gain
+			FROM endorse e
+			LEFT JOIN endorse_logs el ON el.id_endorse = e.id
+			  AND DATE(el.date) BETWEEN '$start_date' AND '$until_date'
+			WHERE e.id_campaign = '$id_campaign'
+			GROUP BY e.id
+			ORDER BY views_gain DESC
+			LIMIT 1
+		");
+		$top_creator       = $top ? $top[0]['nama_creator'] : '-';
+		$top_creator_views = $top ? (int)$top[0]['views_gain'] : 0;
+
+		// Anomaly count (negative daily views per creator)
+		$anomaly_raw = $this->mymodel->selectWithQuery("
+			SELECT e.id AS id_endorse,
+			       DATE(el.date) AS log_date,
+			       SUM(el.views_after - el.views_before) AS daily_views
+			FROM endorse e
+			INNER JOIN endorse_logs el ON el.id_endorse = e.id
+			WHERE e.id_campaign = '$id_campaign'
+			  AND DATE(el.date) BETWEEN '$start_date' AND '$until_date'
+			GROUP BY e.id, DATE(el.date)
+			HAVING daily_views < 0
+		");
+		$anomaly_count = count($anomaly_raw);
+
+		header('Content-Type: application/json; charset=utf-8');
+		echo json_encode([
+			'missing_count'      => $missing_count,
+			'avg_daily_views'    => $avg_daily,
+			'top_creator'        => $top_creator,
+			'top_creator_views'  => $top_creator_views,
+			'anomaly_count'      => $anomaly_count,
+		]);
+	}
+
+	public function get_missing_creators()
+	{
+		$id_campaign    = $this->db->escape_str($_GET['id_campaign']);
+		$threshold_days = (int)($_GET['threshold_days'] ?: 2);
+
+		$rows = $this->mymodel->selectWithQuery("
+			SELECT e.id, e.nama_creator, e.platform, e.influencer,
+			       e.link_upload, e.status_endorse, e.posting_at,
+			       MAX(DATE(el.date)) AS last_log_date,
+			       DATEDIFF(CURDATE(), MAX(DATE(el.date))) AS days_since_log
+			FROM endorse e
+			LEFT JOIN endorse_logs el ON el.id_endorse = e.id
+			WHERE e.id_campaign = '$id_campaign'
+			  AND e.status NOT IN ('Done','Reject','REJECT')
+			GROUP BY e.id
+			HAVING last_log_date IS NULL OR DATEDIFF(CURDATE(), last_log_date) >= $threshold_days
+			ORDER BY days_since_log DESC
+		");
+
+		header('Content-Type: application/json; charset=utf-8');
+		echo json_encode($rows ?: []);
+	}
+
+	public function get_performers_ranking()
+	{
+		$id_campaign = $this->db->escape_str($_GET['id_campaign']);
+		$start_date  = $this->db->escape_str($_GET['start_date'] ?: date('Y-m-01'));
+		$until_date  = $this->db->escape_str($_GET['until_date']  ?: date('Y-m-d'));
+		$sort        = in_array($_GET['sort'], ['views','engagement','cpm']) ? $_GET['sort'] : 'views';
+		$order       = $_GET['order'] === 'asc' ? 'ASC' : 'DESC';
+
+		$sort_col = [
+			'views'      => 'views_gain',
+			'engagement' => 'engagement_gain',
+			'cpm'        => 'cpm',
+		][$sort];
+
+		$rows = $this->mymodel->selectWithQuery("
+			SELECT e.id, e.nama_creator, e.platform, e.influencer, e.total_cost,
+			       e.link_upload, e.posting_at,
+			       COALESCE(SUM(el.views_after   - el.views_before), 0)  AS views_gain,
+			       COALESCE(SUM(el.likes_after   - el.likes_before), 0)  AS likes_gain,
+			       COALESCE(SUM(el.comment_after - el.comment_before), 0) AS comment_gain,
+			       COALESCE(SUM(el.share_save_after - el.share_save_before), 0) AS share_save_gain,
+			       COALESCE(SUM(el.likes_after   - el.likes_before
+			                  + el.comment_after - el.comment_before
+			                  + el.share_save_after - el.share_save_before), 0) AS engagement_gain,
+			       CASE WHEN SUM(el.views_after - el.views_before) > 0
+			            THEN (e.total_cost / SUM(el.views_after - el.views_before)) * 1000
+			            ELSE NULL END AS cpm
+			FROM endorse e
+			LEFT JOIN endorse_logs el ON el.id_endorse = e.id
+			  AND DATE(el.date) BETWEEN '$start_date' AND '$until_date'
+			WHERE e.id_campaign = '$id_campaign'
+			GROUP BY e.id
+			ORDER BY $sort_col $order
+		");
+
+		header('Content-Type: application/json; charset=utf-8');
+		echo json_encode($rows ?: []);
+	}
+
+	public function get_creator_trends()
+	{
+		$id_campaign = $this->db->escape_str($_GET['id_campaign']);
+		$start_date  = $this->db->escape_str($_GET['start_date'] ?: date('Y-m-d', strtotime('-13 days')));
+		$until_date  = $this->db->escape_str($_GET['until_date']  ?: date('Y-m-d'));
+
+		$rows = $this->mymodel->selectWithQuery("
+			SELECT e.id AS id_endorse, e.nama_creator, e.platform,
+			       e.link_upload, e.posting_at, e.status_endorse,
+			       DATE(el.date) AS log_date,
+			       SUM(el.views_after  - el.views_before)        AS views_gain,
+			       MAX(el.views_before)                          AS views_before,
+			       MAX(el.views_after)                           AS views_after,
+			       SUM(el.likes_after  - el.likes_before)        AS likes_gain,
+			       SUM(el.comment_after - el.comment_before)     AS comment_gain,
+			       SUM(el.share_save_after - el.share_save_before) AS share_save_gain
+			FROM endorse e
+			INNER JOIN endorse_logs el ON el.id_endorse = e.id
+			WHERE e.id_campaign = '$id_campaign'
+			  AND DATE(el.date) BETWEEN '$start_date' AND '$until_date'
+			GROUP BY e.id, DATE(el.date)
+			ORDER BY e.id ASC, DATE(el.date) ASC
+		");
+
+		// Restructure into per-creator arrays
+		$creators = [];
+		foreach ($rows as $row) {
+			$key = $row['id_endorse'];
+			if (!isset($creators[$key])) {
+				$creators[$key] = [
+					'id_endorse'      => $row['id_endorse'],
+					'nama_creator'    => $row['nama_creator'],
+					'platform'        => $row['platform'],
+					'link_upload'     => $row['link_upload'],
+					'posting_at'      => $row['posting_at'],
+					'status_endorse'  => $row['status_endorse'],
+					'total_views_gain'=> 0,
+					'dates'           => [],
+					'values'          => [],
+					'daily_detail'    => [],
+				];
+			}
+			$vgain = (int)$row['views_gain'];
+			$creators[$key]['total_views_gain'] += $vgain;
+			$creators[$key]['dates'][]  = $row['log_date'];
+			$creators[$key]['values'][] = $vgain;
+			$creators[$key]['daily_detail'][] = [
+				'date'           => $row['log_date'],
+				'views_before'   => (int)$row['views_before'],
+				'views_after'    => (int)$row['views_after'],
+				'views_gain'     => $vgain,
+				'likes_gain'     => (int)$row['likes_gain'],
+				'comment_gain'   => (int)$row['comment_gain'],
+				'share_save_gain'=> (int)$row['share_save_gain'],
+			];
+		}
+
+		header('Content-Type: application/json; charset=utf-8');
+		echo json_encode(array_values($creators));
+	}
+
+	public function get_anomalies()
+	{
+		$id_campaign = $this->db->escape_str($_GET['id_campaign']);
+		$start_date  = $this->db->escape_str($_GET['start_date'] ?: date('Y-m-01'));
+		$until_date  = $this->db->escape_str($_GET['until_date']  ?: date('Y-m-d'));
+
+		$rows = $this->mymodel->selectWithQuery("
+			SELECT e.id AS id_endorse, e.nama_creator, e.platform,
+			       e.link_upload,
+			       DATE(el.date) AS log_date,
+			       SUM(el.views_after  - el.views_before)        AS daily_views,
+			       MAX(el.views_before)                          AS views_before,
+			       MAX(el.views_after)                           AS views_after,
+			       SUM(el.likes_after  - el.likes_before)        AS likes_gain,
+			       SUM(el.comment_after - el.comment_before)     AS comment_gain,
+			       SUM(el.share_save_after - el.share_save_before) AS share_save_gain
+			FROM endorse e
+			INNER JOIN endorse_logs el ON el.id_endorse = e.id
+			WHERE e.id_campaign = '$id_campaign'
+			  AND DATE(el.date) BETWEEN '$start_date' AND '$until_date'
+			GROUP BY e.id, DATE(el.date)
+			ORDER BY e.id ASC, DATE(el.date) ASC
+		");
+
+		// Per-creator averages
+		$creator_sums  = [];
+		$creator_counts = [];
+		foreach ($rows as $row) {
+			$k = $row['id_endorse'];
+			if (!isset($creator_sums[$k])) { $creator_sums[$k] = 0; $creator_counts[$k] = 0; }
+			$creator_sums[$k]   += (int)$row['daily_views'];
+			$creator_counts[$k] += 1;
+		}
+		$creator_avg = [];
+		foreach ($creator_sums as $k => $s) {
+			$creator_avg[$k] = $creator_counts[$k] > 0 ? $s / $creator_counts[$k] : 0;
+		}
+
+		$anomalies = [];
+		foreach ($rows as $row) {
+			$k     = $row['id_endorse'];
+			$views = (int)$row['daily_views'];
+			$avg   = $creator_avg[$k] ?? 0;
+			$reason = null;
+
+			if ($views < 0) {
+				$reason = 'Minus (data koreksi)';
+			} elseif ($views === 0) {
+				$reason = 'Views stagnan';
+			} elseif ($avg > 0 && $views > 3 * $avg) {
+				$reason = 'Spike tidak wajar';
+			}
+
+			if ($reason !== null) {
+				$anomalies[] = [
+					'nama_creator'   => $row['nama_creator'],
+					'platform'       => $row['platform'],
+					'link_upload'    => $row['link_upload'],
+					'log_date'       => $row['log_date'],
+					'daily_views'    => $views,
+					'views_before'   => (int)$row['views_before'],
+					'views_after'    => (int)$row['views_after'],
+					'likes_gain'     => (int)$row['likes_gain'],
+					'comment_gain'   => (int)$row['comment_gain'],
+					'share_save_gain'=> (int)$row['share_save_gain'],
+					'creator_avg'    => round($avg),
+					'reason'         => $reason,
+				];
+			}
+		}
+
+		header('Content-Type: application/json; charset=utf-8');
+		echo json_encode($anomalies);
 	}
 
 }
