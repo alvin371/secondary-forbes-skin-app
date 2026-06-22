@@ -518,8 +518,6 @@ if (!$_SESSION['is_login']) {
       </button>
     </div>
     <?php
-    $this->load->library('permission');
-    
     $uri_1  = $this->uri->segment(1);
     $uri_2  = $this->uri->segment(2);
     $m = $this->input->get('m');
@@ -530,8 +528,47 @@ if (!$_SESSION['is_login']) {
     
     $CI =& get_instance();
     $CI->load->library('permission');
-    
-    $can_view_dashboard = $CI->permission->check_permission($user_id, 'dashboard', 'view');
+
+    $sidebar_modules = [
+      'dashboard',
+      'report',
+      'expense',
+      'marketing',
+      'ads_tiktok',
+      'ads_meta',
+      'ads_shopee',
+      'ads_lazada',
+      'influencer',
+      'influencer_dummy',
+      'endorse_campaign',
+      'calendar',
+      'payment',
+      'codeboost',
+      'marketplace_account',
+      'transaction',
+      'transaction_item',
+      'crm_mg',
+      'crm_pome',
+      'group_wa',
+      'stock',
+      'product',
+      'quest_level',
+      'position',
+      'roles',
+      'benefit',
+      'quest',
+      'milestone',
+      'recruitment',
+      'modules',
+      'user',
+      'profile',
+      'scraper',
+    ];
+    $modules_permissions = $CI->permission->get_bulk_permissions($user_id, $sidebar_modules, 'view');
+    $modules_permissions['overview'] = $modules_permissions['marketing'];
+    $modules_permissions['marketplace-account'] = $modules_permissions['marketplace_account'];
+
+    $can_view_dashboard = $modules_permissions['dashboard'];
     ?>
 
     <div class="d-flex mb-3 img-logo" style="padding-left:15px;padding-top:20px;padding-bottom:20px;position:sticky!important;top:0;background:#FFF;z-index:100;
@@ -556,116 +593,61 @@ if (!$_SESSION['is_login']) {
     $menu_hr_management = $menu_quest_level = $menu_position = $menu_benefit = $menu_quest = $menu_milestone = $menu_recruitment = $menu_roles = '';
     $menu_akun = $menu_user = $menu_profile = $menu_logout = '';
     
-    // Get user permissions for menu visibility using module names from clear_and_replace_modules.sql
-    // Access permission library through CodeIgniter instance
-    $CI =& get_instance();
-    $CI->load->library('permission');
-    
     // System Management
-    $can_view_report = $CI->permission->check_permission($user_id, 'report', 'view');
-    $can_view_expense = $CI->permission->check_permission($user_id, 'expense', 'view');
+    $can_view_report = $modules_permissions['report'];
+    $can_view_expense = $modules_permissions['expense'];
     
     // Marketing Category - show if user has access to any marketing module
-    $can_view_marketing = $CI->permission->check_permission($user_id, 'marketing', 'view') ||
-                         $CI->permission->check_permission($user_id, 'ads_tiktok', 'view') ||
-                         $CI->permission->check_permission($user_id, 'ads_meta', 'view') ||
-                         $CI->permission->check_permission($user_id, 'ads_shopee', 'view') ||
-                         $CI->permission->check_permission($user_id, 'ads_lazada', 'view') ||
-                         $CI->permission->check_permission($user_id, 'influencer', 'view') ||
-                         $CI->permission->check_permission($user_id, 'influencer_dummy', 'view') ||
-                         $CI->permission->check_permission($user_id, 'endorse_campaign', 'view') ||
-                         $CI->permission->check_permission($user_id, 'calendar', 'view') ||
-                         $CI->permission->check_permission($user_id, 'payment', 'view') ||
-                         $CI->permission->check_permission($user_id, 'codeboost', 'view');
+    $can_view_marketing = $modules_permissions['marketing'] ||
+                         $modules_permissions['ads_tiktok'] ||
+                         $modules_permissions['ads_meta'] ||
+                         $modules_permissions['ads_shopee'] ||
+                         $modules_permissions['ads_lazada'] ||
+                         $modules_permissions['influencer'] ||
+                         $modules_permissions['influencer_dummy'] ||
+                         $modules_permissions['endorse_campaign'] ||
+                         $modules_permissions['calendar'] ||
+                         $modules_permissions['payment'] ||
+                         $modules_permissions['codeboost'];
 
     // Marketing Sub-modules
-    $can_view_overview = $CI->permission->check_permission($user_id, 'marketing', 'view');
-    $can_view_advertiser = $CI->permission->check_permission($user_id, 'ads_tiktok', 'view') ||
-                          $CI->permission->check_permission($user_id, 'ads_meta', 'view') ||
-                          $CI->permission->check_permission($user_id, 'ads_shopee', 'view') ||
-                          $CI->permission->check_permission($user_id, 'ads_lazada', 'view');
-    $can_view_endorsement = $CI->permission->check_permission($user_id, 'influencer', 'view') ||
-                           $CI->permission->check_permission($user_id, 'influencer_dummy', 'view') ||
-                           $CI->permission->check_permission($user_id, 'endorse_campaign', 'view') ||
-                           $CI->permission->check_permission($user_id, 'calendar', 'view') ||
-                           $CI->permission->check_permission($user_id, 'payment', 'view') ||
-                           $CI->permission->check_permission($user_id, 'codeboost', 'view');
+    $can_view_overview = $modules_permissions['overview'];
+    $can_view_advertiser = $modules_permissions['ads_tiktok'] ||
+                          $modules_permissions['ads_meta'] ||
+                          $modules_permissions['ads_shopee'] ||
+                          $modules_permissions['ads_lazada'];
+    $can_view_endorsement = $modules_permissions['influencer'] ||
+                           $modules_permissions['influencer_dummy'] ||
+                           $modules_permissions['endorse_campaign'] ||
+                           $modules_permissions['calendar'] ||
+                           $modules_permissions['payment'] ||
+                           $modules_permissions['codeboost'];
     
     // Order & Customer Management - show if user has access to any module
-    $can_view_order_customer = $CI->permission->check_permission($user_id, 'marketplace_account', 'view') ||
-                               $CI->permission->check_permission($user_id, 'transaction', 'view') ||
-                               $CI->permission->check_permission($user_id, 'transaction_item', 'view') ||
-                               $CI->permission->check_permission($user_id, 'crm_mg', 'view') ||
-                               $CI->permission->check_permission($user_id, 'crm_pome', 'view') ||
-                               $CI->permission->check_permission($user_id, 'group_wa', 'view');
+    $can_view_order_customer = $modules_permissions['marketplace_account'] ||
+                               $modules_permissions['transaction'] ||
+                               $modules_permissions['transaction_item'] ||
+                               $modules_permissions['crm_mg'] ||
+                               $modules_permissions['crm_pome'] ||
+                               $modules_permissions['group_wa'];
     
     // Operations - show if user has access to any operations module
-    $can_view_operasional = $CI->permission->check_permission($user_id, 'stock', 'view') ||
-                           $CI->permission->check_permission($user_id, 'product', 'view');
+    $can_view_operasional = $modules_permissions['stock'] ||
+                           $modules_permissions['product'];
     
     // HR Management - show if user has access to any HR module
-    $can_view_hr_management = $CI->permission->check_permission($user_id, 'quest_level', 'view') ||
-                              $CI->permission->check_permission($user_id, 'position', 'view') ||
-                              $CI->permission->check_permission($user_id, 'benefit', 'view') ||
-                              $CI->permission->check_permission($user_id, 'quest', 'view') ||
-                              $CI->permission->check_permission($user_id, 'milestone', 'view') ||
-                              $CI->permission->check_permission($user_id, 'recruitment', 'view');
+    $can_view_hr_management = $modules_permissions['quest_level'] ||
+                              $modules_permissions['position'] ||
+                              $modules_permissions['benefit'] ||
+                              $modules_permissions['quest'] ||
+                              $modules_permissions['milestone'] ||
+                              $modules_permissions['recruitment'];
     
     // Account Management - show if user has access to any account module  
-    $can_view_akun = $CI->permission->check_permission($user_id, 'user', 'view') ||
-                    $CI->permission->check_permission($user_id, 'profile', 'view') ||
-                    $CI->permission->check_permission($user_id, 'roles', 'view') ||
-                    $CI->permission->check_permission($user_id, 'modules', 'view');
-    
-    // Individual module permissions for detailed checks
-    $modules_permissions = [
-        // System Management
-        'dashboard' => $CI->permission->check_permission($user_id, 'dashboard', 'view'),
-        'report' => $CI->permission->check_permission($user_id, 'report', 'view'),
-        'expense' => $CI->permission->check_permission($user_id, 'expense', 'view'),
-        
-        // Marketing
-        'overview' => $CI->permission->check_permission($user_id, 'marketing', 'view'),
-        'ads_tiktok' => $CI->permission->check_permission($user_id, 'ads_tiktok', 'view'),
-        'ads_meta' => $CI->permission->check_permission($user_id, 'ads_meta', 'view'),
-        'ads_shopee' => $CI->permission->check_permission($user_id, 'ads_shopee', 'view'),
-        'ads_lazada' => $CI->permission->check_permission($user_id, 'ads_lazada', 'view'),
-        'influencer' => $CI->permission->check_permission($user_id, 'influencer', 'view'),
-        'influencer_dummy' => $CI->permission->check_permission($user_id, 'influencer_dummy', 'view'),
-        'endorse_campaign' => $CI->permission->check_permission($user_id, 'endorse_campaign', 'view'),
-        'calendar' => $CI->permission->check_permission($user_id, 'calendar', 'view'),
-        'payment' => $CI->permission->check_permission($user_id, 'payment', 'view'),
-        'codeboost' => $CI->permission->check_permission($user_id, 'codeboost', 'view'),
-        
-        // Order & Customer Management
-        'marketplace_account' => $CI->permission->check_permission($user_id, 'marketplace_account', 'view'),
-        'transaction' => $CI->permission->check_permission($user_id, 'transaction', 'view'),
-        'transaction_item' => $CI->permission->check_permission($user_id, 'transaction_item', 'view'),
-        'crm_mg' => $CI->permission->check_permission($user_id, 'crm_mg', 'view'),
-        'crm_pome' => $CI->permission->check_permission($user_id, 'crm_pome', 'view'),
-        'group_wa' => $CI->permission->check_permission($user_id, 'group_wa', 'view'),
-        
-        // Operations
-        'stock' => $CI->permission->check_permission($user_id, 'stock', 'view'),
-        'product' => $CI->permission->check_permission($user_id, 'product', 'view'),
-        
-        // HR Management
-        'quest_level' => $CI->permission->check_permission($user_id, 'quest_level', 'view'),
-        'position' => $CI->permission->check_permission($user_id, 'position', 'view'),
-        'roles' => $CI->permission->check_permission($user_id, 'roles', 'view'),
-        'benefit' => $CI->permission->check_permission($user_id, 'benefit', 'view'),
-        'quest' => $CI->permission->check_permission($user_id, 'quest', 'view'),
-        'milestone' => $CI->permission->check_permission($user_id, 'milestone', 'view'),
-        'recruitment' => $CI->permission->check_permission($user_id, 'recruitment', 'view'),
-        'modules' => $CI->permission->check_permission($user_id, 'modules', 'view'),
-        
-        // Account Management
-        'user' => $CI->permission->check_permission($user_id, 'user', 'view'),
-        'profile' => $CI->permission->check_permission($user_id, 'profile', 'view'),
-        
-        // Additional
-        'scraper' => $CI->permission->check_permission($user_id, 'scraper', 'view')
-    ];
+    $can_view_akun = $modules_permissions['user'] ||
+                    $modules_permissions['profile'] ||
+                    $modules_permissions['roles'] ||
+                    $modules_permissions['modules'];
 
     if ($uri_1 == 'dashboard') {
       $menu_dashboard = 'active';

@@ -11,6 +11,11 @@ class Permission
 {
     protected $CI;
     protected $user_permissions_cache = [];
+    protected $permission_tables_exist = null;
+    protected $user_permission_rows_cache = [];
+    protected $user_permission_maps_cache = [];
+    protected $fallback_permission_maps = [];
+    protected $allowed_actions = ['view', 'create', 'edit', 'delete', 'approve'];
     
     public function __construct()
     {
@@ -28,44 +33,48 @@ class Permission
      */
     public function check_permission($user_id, $module_name, $action = 'view')
     {
-        // Cache key for performance
+        $user_id = (int) $user_id;
+        $module_name = trim((string) $module_name);
+        $action = $this->sanitize_action($action);
         $cache_key = "{$user_id}_{$module_name}_{$action}";
-        
+
         if (isset($this->user_permissions_cache[$cache_key])) {
             return $this->user_permissions_cache[$cache_key];
         }
-        
-        // Check if permission tables exist first
-        if (!$this->permission_tables_exist()) {
-            // Use fallback role-based system
-            $has_permission = $this->fallback_permission_check($user_id, $module_name, $action);
+
+        $has_permission = false;
+        $permissions_map = $this->get_user_permission_map($user_id);
+        $module_key = strtolower($module_name);
+
+        if (isset($permissions_map[$module_key][$action])) {
+            $has_permission = $permissions_map[$module_key][$action];
         } else {
-            // Use the role-based permission system
-            try {
-                // Use the view for easy permission checking
-                $result = $this->CI->mymodel->selectWithQuery("
-                    SELECT can_{$action} as has_permission
-                    FROM user_module_permissions 
-                    WHERE user_id = '$user_id' AND module_name = '$module_name'
-                    LIMIT 1
-                ");
-                
-                if (empty($result)) {
-                    // No permission found, use fallback
-                    $has_permission = $this->fallback_permission_check($user_id, $module_name, $action);
-                } else {
-                    $has_permission = $result[0]['has_permission'] == 1;
-                }
-            } catch (Exception $e) {
-                // If any error occurs, use fallback
-                $has_permission = $this->fallback_permission_check($user_id, $module_name, $action);
-            }
+            $has_permission = $this->fallback_permission_check($user_id, $module_name, $action);
         }
-        
-        // Cache the result
+
         $this->user_permissions_cache[$cache_key] = $has_permission;
-        
+
         return $has_permission;
+    }
+
+    /**
+     * Get permissions for multiple modules at once.
+     *
+     * @param int $user_id
+     * @param array $modules
+     * @param string $action
+     * @return array
+     */
+    public function get_bulk_permissions($user_id, array $modules, $action = 'view')
+    {
+        $result = [];
+        $action = $this->sanitize_action($action);
+
+        foreach (array_values(array_unique($modules)) as $module_name) {
+            $result[$module_name] = $this->check_permission($user_id, $module_name, $action);
+        }
+
+        return $result;
     }
     
     /**
@@ -77,24 +86,15 @@ class Permission
      */
     public function has_module_access($user_id, $controller)
     {
-        try {
-            $result = $this->CI->mymodel->selectWithQuery("
-                SELECT COUNT(*) as cnt
-                FROM user_module_permissions
-                WHERE user_id = $user_id
-                AND controller = '$controller'
-                AND (can_view = 1 OR can_create = 1 OR can_edit = 1 OR can_delete = 1)
-            ");
+        $user_id = (int) $user_id;
+        $controller_key = strtolower(trim((string) $controller));
+        $permissions_by_controller = $this->get_user_permissions_by_controller($user_id);
 
-            if (!empty($result) && $result[0]['cnt'] > 0) {
-                return true;
-            }
-            // Fallback when view returns 0 rows (e.g. module not mapped or view just populated)
-            return $this->fallback_permission_check($user_id, $controller, 'view');
-        } catch (Exception $e) {
-            // Fallback to role-based check
-            return $this->fallback_permission_check($user_id, $controller, 'view');
+        if (isset($permissions_by_controller[$controller_key])) {
+            return $permissions_by_controller[$controller_key];
         }
+
+        return $this->fallback_permission_check($user_id, $controller, 'view');
     }
     
     /**
@@ -105,26 +105,21 @@ class Permission
      */
     public function get_user_permissions($user_id)
     {
+        $rows = $this->get_user_permission_rows((int) $user_id);
+
+        if (!empty($rows)) {
+            return array_values(array_filter($rows, function ($row) {
+                return !empty($row['can_view']) ||
+                    !empty($row['can_create']) ||
+                    !empty($row['can_edit']) ||
+                    !empty($row['can_delete']) ||
+                    !empty($row['can_approve']);
+            }));
+        }
+
         try {
-            return $this->CI->mymodel->selectWithQuery("
-                SELECT 
-                    module_name,
-                    module_display_name,
-                    controller,
-                    parent_id,
-                    can_view,
-                    can_create,
-                    can_edit,
-                    can_delete,
-                    can_approve,
-                    has_override
-                FROM user_module_permissions 
-                WHERE user_id = $user_id
-                AND (can_view = 1 OR can_create = 1 OR can_edit = 1 OR can_delete = 1 OR can_approve = 1)
-                ORDER BY module_name
-            ");
+            return [];
         } catch (Exception $e) {
-            // Return basic permissions for fallback
             return [];
         }
     }
@@ -138,7 +133,7 @@ class Permission
     public function get_user_sidebar_modules($user_id)
     {
         $user_id = (int) $user_id;
-        $permissions = $this->CI->mymodel->selectWithQuery("
+        $permissions = $this->CI->db->query("
             SELECT
                 m.id,
                 m.name,
@@ -156,7 +151,7 @@ class Permission
             WHERE m.is_active = 1
             AND (ump.can_view = 1 OR ump.can_create = 1 OR ump.can_edit = 1 OR ump.can_delete = 1)
             ORDER BY m.sort_order, m.display_name
-        ");
+        ")->result_array();
         
         return $this->build_module_tree($permissions);
     }
@@ -208,17 +203,17 @@ class Permission
      */
     private function permission_tables_exist()
     {
-        try {
-            // Check if role-based permission tables exist
-            $modules = $this->CI->mymodel->selectWithQuery("SHOW TABLES LIKE 'modules'");
-            $roles = $this->CI->mymodel->selectWithQuery("SHOW TABLES LIKE 'roles'");
-            $role_permissions = $this->CI->mymodel->selectWithQuery("SHOW TABLES LIKE 'role_permissions'");
-            $user_roles = $this->CI->mymodel->selectWithQuery("SHOW TABLES LIKE 'user_roles'");
-            
-            return !empty($modules) && !empty($roles) && !empty($role_permissions) && !empty($user_roles);
-        } catch (Exception $e) {
-            return false;
+        if ($this->permission_tables_exist !== null) {
+            return $this->permission_tables_exist;
         }
+
+        $this->permission_tables_exist =
+            $this->CI->db->table_exists('modules') &&
+            $this->CI->db->table_exists('roles') &&
+            $this->CI->db->table_exists('role_permissions') &&
+            $this->CI->db->table_exists('user_roles');
+
+        return $this->permission_tables_exist;
     }
 
     /**
@@ -232,72 +227,213 @@ class Permission
      */
     private function fallback_permission_check($user_id, $module_name, $action)
     {
+        $action = $this->sanitize_action($action);
+        $module_key = strtolower(trim((string) $module_name));
+        $fallback = $this->get_fallback_permission_map((int) $user_id);
+
+        if (isset($fallback['modules'][$module_key][$action])) {
+            return $fallback['modules'][$module_key][$action];
+        }
+
+        if ($fallback['is_admin']) {
+            return true;
+        }
+
+        if ($action === 'view' && in_array($module_key, ['dashboard', 'profile', 'home'], true)) {
+            return true;
+        }
+
+        if ($fallback['legacy_admin']) {
+            return true;
+        }
+
+        if ($action === 'view' && in_array($module_key, ['dashboard', 'profile', 'quest'], true)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private function sanitize_action($action)
+    {
+        $action = strtolower(trim((string) $action));
+
+        return in_array($action, $this->allowed_actions, true) ? $action : 'view';
+    }
+
+    private function get_user_permission_rows($user_id)
+    {
+        if (array_key_exists($user_id, $this->user_permission_rows_cache)) {
+            return $this->user_permission_rows_cache[$user_id];
+        }
+
+        if (!$this->permission_tables_exist() || !$this->CI->db->table_exists('user_module_permissions')) {
+            $this->user_permission_rows_cache[$user_id] = [];
+            return [];
+        }
+
         try {
-            // Query user permissions through role_permissions table
-            $result = $this->CI->mymodel->selectWithQuery("
-                SELECT MAX(rp.can_{$action}) as has_permission
-                FROM user u
-                INNER JOIN user_roles ur ON u.id = ur.user_id
+            $rows = $this->CI->db->query("
+                SELECT
+                    user_id,
+                    module_id,
+                    module_name,
+                    module_display_name,
+                    controller,
+                    parent_id,
+                    can_view,
+                    can_create,
+                    can_edit,
+                    can_delete,
+                    can_approve,
+                    has_override
+                FROM user_module_permissions
+                WHERE user_id = ?
+                ORDER BY module_name
+            ", [$user_id])->result_array();
+        } catch (Exception $e) {
+            $rows = [];
+        }
+
+        foreach ($rows as &$row) {
+            foreach (['can_view', 'can_create', 'can_edit', 'can_delete', 'can_approve', 'has_override'] as $column) {
+                $row[$column] = (int) ($row[$column] ?? 0);
+            }
+        }
+        unset($row);
+
+        $this->user_permission_rows_cache[$user_id] = $rows;
+
+        return $rows;
+    }
+
+    private function get_user_permission_map($user_id)
+    {
+        if (isset($this->user_permission_maps_cache[$user_id]['modules'])) {
+            return $this->user_permission_maps_cache[$user_id]['modules'];
+        }
+
+        $rows = $this->get_user_permission_rows($user_id);
+        $module_map = [];
+        $controller_map = [];
+
+        foreach ($rows as $row) {
+            $module_key = strtolower((string) ($row['module_name'] ?? ''));
+            $controller_key = strtolower((string) ($row['controller'] ?? ''));
+
+            if ($module_key !== '') {
+                $module_map[$module_key] = [
+                    'view' => !empty($row['can_view']),
+                    'create' => !empty($row['can_create']),
+                    'edit' => !empty($row['can_edit']),
+                    'delete' => !empty($row['can_delete']),
+                    'approve' => !empty($row['can_approve']),
+                ];
+            }
+
+            if ($controller_key !== '') {
+                $controller_map[$controller_key] = $controller_map[$controller_key] ?? false;
+                $controller_map[$controller_key] = $controller_map[$controller_key]
+                    || !empty($row['can_view'])
+                    || !empty($row['can_create'])
+                    || !empty($row['can_edit'])
+                    || !empty($row['can_delete'])
+                    || !empty($row['can_approve']);
+            }
+        }
+
+        $this->user_permission_maps_cache[$user_id] = [
+            'modules' => $module_map,
+            'controllers' => $controller_map,
+        ];
+
+        return $module_map;
+    }
+
+    private function get_user_permissions_by_controller($user_id)
+    {
+        if (!isset($this->user_permission_maps_cache[$user_id]['controllers'])) {
+            $this->get_user_permission_map($user_id);
+        }
+
+        return $this->user_permission_maps_cache[$user_id]['controllers'] ?? [];
+    }
+
+    private function get_fallback_permission_map($user_id)
+    {
+        if (isset($this->fallback_permission_maps[$user_id])) {
+            return $this->fallback_permission_maps[$user_id];
+        }
+
+        $fallback = [
+            'modules' => [],
+            'is_admin' => false,
+            'legacy_admin' => false,
+        ];
+
+        try {
+            $rows = $this->CI->db->query("
+                SELECT
+                    m.name AS module_name,
+                    MAX(rp.can_view) AS can_view,
+                    MAX(rp.can_create) AS can_create,
+                    MAX(rp.can_edit) AS can_edit,
+                    MAX(rp.can_delete) AS can_delete,
+                    MAX(COALESCE(rp.can_approve, 0)) AS can_approve
+                FROM user_roles ur
                 INNER JOIN roles r ON ur.role_id = r.id AND r.is_active = 1
                 INNER JOIN role_permissions rp ON r.id = rp.role_id
                 INNER JOIN modules m ON rp.module_id = m.id AND m.is_active = 1
-                WHERE u.id = $user_id
-                AND m.name = '$module_name'
-                GROUP BY u.id, m.name
-            ");
+                WHERE ur.user_id = ?
+                GROUP BY m.name
+            ", [$user_id])->result_array();
 
-            if (!empty($result) && isset($result[0]['has_permission'])) {
-                return $result[0]['has_permission'] == 1;
+            foreach ($rows as $row) {
+                $module_key = strtolower((string) $row['module_name']);
+                $fallback['modules'][$module_key] = [
+                    'view' => !empty($row['can_view']),
+                    'create' => !empty($row['can_create']),
+                    'edit' => !empty($row['can_edit']),
+                    'delete' => !empty($row['can_delete']),
+                    'approve' => !empty($row['can_approve']),
+                ];
             }
 
-            // If no specific permission found, check if user has admin role
-            $user_roles = $this->CI->mymodel->selectWithQuery("
-                SELECT r.name, r.level
+            $role_rows = $this->CI->db->query("
+                SELECT r.name
                 FROM user_roles ur
                 INNER JOIN roles r ON ur.role_id = r.id
-                WHERE ur.user_id = $user_id AND r.is_active = 1
-            ");
+                WHERE ur.user_id = ? AND r.is_active = 1
+            ", [$user_id])->result_array();
 
-            // Super admin and admin roles get full access
-            foreach ($user_roles as $role) {
-                if (in_array(strtolower($role['name']), ['super_admin', 'admin'])) {
-                    return true;
+            foreach ($role_rows as $role) {
+                if (in_array(strtolower((string) $role['name']), ['super_admin', 'admin'], true)) {
+                    $fallback['is_admin'] = true;
+                    break;
                 }
             }
-
-            // Basic modules everyone can view
-            $basic_modules = ['dashboard', 'profile', 'home'];
-            if (in_array($module_name, $basic_modules) && $action === 'view') {
-                return true;
-            }
-
-            return false;
-
         } catch (Exception $e) {
-            // Last resort: use old role-based system
-            $user = $this->CI->mymodel->selectWithQuery("
-                SELECT role FROM user WHERE id = $user_id LIMIT 1
-            ");
-
-            if (empty($user)) {
-                return false;
-            }
-
-            $role = $user[0]['role'];
-
-            // Legacy role IDs: HR/Admin roles (1, 2, 7) get full access
-            if (in_array($role, ['1', '2', '7'])) {
-                return true;
-            }
-
-            // Basic modules everyone can view
-            $basic_modules = ['dashboard', 'profile', 'quest'];
-            if (in_array($module_name, $basic_modules) && $action === 'view') {
-                return true;
-            }
-
-            return false;
+            $fallback['modules'] = [];
         }
+
+        try {
+            $user = $this->CI->db->query("
+                SELECT role
+                FROM user
+                WHERE id = ?
+                LIMIT 1
+            ", [$user_id])->row_array();
+
+            if (!empty($user) && in_array((string) $user['role'], ['1', '2', '7'], true)) {
+                $fallback['legacy_admin'] = true;
+            }
+        } catch (Exception $e) {
+            $fallback['legacy_admin'] = false;
+        }
+
+        $this->fallback_permission_maps[$user_id] = $fallback;
+
+        return $fallback;
     }
 
     /**
@@ -458,8 +594,15 @@ class Permission
                     unset($this->user_permissions_cache[$key]);
                 }
             }
+
+            unset($this->user_permission_rows_cache[$user_id]);
+            unset($this->user_permission_maps_cache[$user_id]);
+            unset($this->fallback_permission_maps[$user_id]);
         } else {
             $this->user_permissions_cache = [];
+            $this->user_permission_rows_cache = [];
+            $this->user_permission_maps_cache = [];
+            $this->fallback_permission_maps = [];
         }
     }
     

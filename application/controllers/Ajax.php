@@ -159,8 +159,8 @@ class Ajax extends CI_Controller
 		if (empty($start_date)) $start_date = date("Y-m-d", strtotime(date("Y-m-d") . " -31 days"));
 		if (empty($until_date)) $until_date = date("Y-m-d");
 
-		$qry_opt = " DATE(endorse_logs.date) ";
-		$group   = " GROUP BY DATE(endorse_logs.date) ";
+		$qry_opt = " endorse_logs.date ";
+		$group   = " GROUP BY endorse_logs.date ";
 
 		// Detail campaign (opsional)
 		$detail = $this->mymodel->selectWithQuery("SELECT * FROM endorse_campaign WHERE id = '$id_campaign'");
@@ -294,7 +294,8 @@ class Ajax extends CI_Controller
 			$filters_date_on_endorse .= " AND DATE(endorse.tgl_tf) >= '$start_date' AND DATE(endorse.tgl_tf) <= '$until_date' ";
 		}
 
-		$qry_common_for_logs = $filters_common . $filters_date_on_endorse;
+		$date_filter_for_logs = " AND endorse_logs.date >= '$start_date' AND endorse_logs.date <= '$until_date' ";
+		$qry_common_for_logs = $filters_common . $filters_date_on_endorse . $date_filter_for_logs;
 
 		// ===== Query data endorse untuk summary & list ids =====
         $base_from_endorse = " FROM endorse ";
@@ -324,16 +325,6 @@ class Ajax extends CI_Controller
 		}
 		$list_ids = rtrim($list_ids, ',');
 
-		$endorse   = 0;
-		$total_cost_from_endorse = 0;
-		$list_ids = '';
-		foreach ($query as $row) {
-			$list_ids .= "'" . $row['id'] . "',";
-			$endorse++;
-			$total_cost_from_endorse += (double)$row['total_cost'];
-		}
-		$list_ids = rtrim($list_ids, ',');
-
 		// ===== Filter tambahan id_endorse =====
 		$qry_list = '';
 		$ids = $_GET['ids'];
@@ -342,6 +333,16 @@ class Ajax extends CI_Controller
 		}
 		if (($cat || $endorse_status) && $list_ids) {
 			$qry_list .= " AND endorse_logs.id_endorse IN ($list_ids) ";
+		}
+		$log_campaign_filter = '';
+		if ($ids_campaign_list) {
+			$log_campaign_filter .= " AND endorse_logs.id_campaign IN ($ids_campaign_list) ";
+		} else if ($is_dashboard != 'true' && $id_campaign) {
+			$log_campaign_filter .= " AND endorse_logs.id_campaign = '$id_campaign' ";
+		}
+		$log_join_campaign = '';
+		if ($need_join_campaign) {
+			$log_join_campaign = " INNER JOIN endorse_campaign ON endorse_campaign.id = endorse.id_campaign ";
 		}
 
 		// ===  Hitung total cost langsung dari tabel endorse (bukan dari logs) ===
@@ -378,12 +379,13 @@ class Ajax extends CI_Controller
                         $qry_opt                                                           AS opt
                     FROM endorse_logs
                     INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
-                    INNER JOIN endorse_campaign ON endorse_campaign.id = endorse.id_campaign
-                    WHERE endorse_logs.id_campaign = '$id_campaign'
+                    $log_join_campaign
+                    WHERE 1=1
+                    $log_campaign_filter
                     $qry_list
                     $qry_common_for_logs
                     $group
-                    ORDER BY DATE(endorse_logs.date) ASC
+                    ORDER BY endorse_logs.date ASC
                 ";
             } else {
                 $sql_list = "
@@ -397,12 +399,13 @@ class Ajax extends CI_Controller
                         $qry_opt                                                           AS opt
                     FROM endorse_logs
                     INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
-                    INNER JOIN endorse_campaign ON endorse_campaign.id = endorse.id_campaign
+                    $log_join_campaign
                     WHERE 1=1
+                    $log_campaign_filter
                     $qry_list
                     $qry_common_for_logs
                     $group
-                    ORDER BY DATE(endorse_logs.date) ASC
+                    ORDER BY endorse_logs.date ASC
                 ";
             }
         } else {
@@ -418,12 +421,13 @@ class Ajax extends CI_Controller
                         $qry_opt                              AS opt
                     FROM endorse_logs
                     INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
-                    INNER JOIN endorse_campaign ON endorse_campaign.id = endorse.id_campaign
-                    WHERE endorse_logs.id_campaign = '$id_campaign'
+                    $log_join_campaign
+                    WHERE 1=1
+                    $log_campaign_filter
                     $qry_list
                     $qry_common_for_logs
                     $group
-                    ORDER BY DATE(endorse_logs.date) ASC
+                    ORDER BY endorse_logs.date ASC
                 ";
             } else {
                 $sql_list = "
@@ -437,12 +441,13 @@ class Ajax extends CI_Controller
                         $qry_opt                              AS opt
                     FROM endorse_logs
                     INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
-                    INNER JOIN endorse_campaign ON endorse_campaign.id = endorse.id_campaign
+                    $log_join_campaign
                     WHERE 1=1
+                    $log_campaign_filter
                     $qry_list
                     $qry_common_for_logs
                     $group
-                    ORDER BY DATE(endorse_logs.date) ASC
+                    ORDER BY endorse_logs.date ASC
                 ";
             }
         }
