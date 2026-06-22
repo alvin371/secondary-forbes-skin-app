@@ -1895,7 +1895,8 @@ class Api_v2 extends CI_Controller
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_ENCODING => '',
                 CURLOPT_MAXREDIRS => 10,
-                CURLOPT_TIMEOUT => 0,
+                CURLOPT_TIMEOUT => 20,
+                CURLOPT_CONNECTTIMEOUT => 5,
                 CURLOPT_FOLLOWLOCATION => true,
                 CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
                 CURLOPT_CUSTOMREQUEST => 'GET',
@@ -5007,11 +5008,11 @@ class Api_v2 extends CI_Controller
                     $_GET['shop_id'] = $shop_id;
                     $_GET['mode'] = 'webhook';
 
-                    // Call the existing sync process that populates all order data
-                    $this->marketplace_order_detail();
-
-                    // The marketplace_order_detail() function will handle the response
-                    // and die, so the code below won't execute
+                    // Marketplace order-detail sync disabled: it ran synchronously on the
+                    // webhook request path with a no-timeout external curl, tying up an
+                    // Apache worker per inbound burst (CPU/MySQL spikes). Keep the raw-row
+                    // audit insert above and fall through to the standard 200 ACK below.
+                    // $this->marketplace_order_detail();
                 } catch (Exception $e) {
                     // Log error but still return success webhook response
                     error_log("Webhook order sync error: " . $e->getMessage());
