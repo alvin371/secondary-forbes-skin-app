@@ -4308,7 +4308,7 @@ gradient_6.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 
 		// Initialize cache system
 		try {
-			$this->load->driver('cache', array('adapter' => 'memcached'));
+			$this->load->driver('cache', array('adapter' => 'apc', 'backup' => 'file'));
 		} catch (Exception $e) {
 			// If cache fails, continue without caching
 			log_message('error', 'Cache initialization failed in get_summary: ' . $e->getMessage());
@@ -4872,7 +4872,7 @@ gradient_6.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 		
 		// Initialize cache system
 		try {
-			$this->load->driver('cache', array('adapter' => 'memcached'));
+			$this->load->driver('cache', array('adapter' => 'apc', 'backup' => 'file'));
 		} catch (Exception $e) {
 			log_message('error', 'Cache initialization failed in get_summary_batch: ' . $e->getMessage());
 		}
@@ -5408,7 +5408,7 @@ gradient_6.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 
 		// Initialize cache system
 		try {
-			$this->load->driver('cache', array('adapter' => 'memcached'));
+			$this->load->driver('cache', array('adapter' => 'apc', 'backup' => 'file'));
 		} catch (Exception $e) {
 			// If cache fails, continue without caching
 			log_message('error', 'Cache initialization failed in get_chart: ' . $e->getMessage());
@@ -6736,7 +6736,7 @@ gradient_5.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 			// Initialize cache if not already done
 			if (!isset($this->cache)) {
 				try {
-					$this->load->driver('cache', array('adapter' => 'memcached'));
+					$this->load->driver('cache', array('adapter' => 'apc', 'backup' => 'file'));
 				} catch (Exception $e) {
 					log_message('error', 'Cache initialization failed: ' . $e->getMessage());
 					// Fallback to direct query execution
@@ -6820,7 +6820,7 @@ gradient_5.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 		
 		// Initialize cache system
 		try {
-			$this->load->driver('cache', array('adapter' => 'memcached'));
+			$this->load->driver('cache', array('adapter' => 'apc', 'backup' => 'file'));
 		} catch (Exception $e) {
 			log_message('error', 'Cache initialization failed in get_kol_metrics_batch: ' . $e->getMessage());
 		}
