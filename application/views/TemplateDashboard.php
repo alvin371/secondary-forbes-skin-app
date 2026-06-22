@@ -1688,6 +1688,26 @@ if (!$_SESSION['is_login']) {
         }
     }
 
+    // Stop dashboard pollers once the session is gone. On expiry these endpoints
+    // return 401/403, status 0, or a non-JSON login redirect (parsererror); without
+    // this the setInterval pollers keep firing from abandoned tabs forever, hammering
+    // /auth/login. Reloading the page (re-login) resumes polling.
+    var dashboardPollingStopped = false;
+    var notifPollInterval = null;
+
+    function isAuthFailure(xhr, status) {
+        return !xhr || xhr.status === 401 || xhr.status === 403 || xhr.status === 0 || status === 'parsererror';
+    }
+
+    function stopDashboardPolling() {
+        if (dashboardPollingStopped) return;
+        dashboardPollingStopped = true;
+        if (notifPollInterval) {
+            clearInterval(notifPollInterval);
+            notifPollInterval = null;
+        }
+    }
+
     $(document).ready(function() {
         $.ajax({
             url: '<?= base_url("notifications/get_unread_count") ?>',
@@ -1697,6 +1717,10 @@ if (!$_SESSION['is_login']) {
                 updateNotificationBadge(data.count);
             },
             error: function(xhr, status, error) {
+                if (isAuthFailure(xhr, status)) {
+                    stopDashboardPolling();
+                    return;
+                }
                 console.error('Error loading notification count:', error);
             }
         });
@@ -1704,7 +1728,8 @@ if (!$_SESSION['is_login']) {
         loadEndorseQueueBadge(false);
     });
 
-    setInterval(function() {
+    notifPollInterval = setInterval(function() {
+      if (dashboardPollingStopped) return;
       $.ajax({
           url: '<?= base_url("notifications/get_unread_count") ?>',
           method: 'GET',
@@ -1719,6 +1744,10 @@ if (!$_SESSION['is_login']) {
               }
           },
           error: function(xhr, status, error) {
+              if (isAuthFailure(xhr, status)) {
+                  stopDashboardPolling();
+                  return;
+              }
               console.error('Error auto-refreshing notification count:', error);
           }
       });
@@ -1737,10 +1766,16 @@ if (!$_SESSION['is_login']) {
     }
 
     function loadEndorseQueueBadge(showPanelFeedback) {
+      if (dashboardPollingStopped) return;
       $.ajax({
           url: '<?= base_url("endorse/queue-count") ?>',
           method: 'GET',
           dataType: 'json',
+          error: function(xhr, status, error) {
+              if (isAuthFailure(xhr, status)) {
+                  stopDashboardPolling();
+              }
+          },
           success: function(data) {
               var count = parseInt(data.count || 0, 10);
               var stalled = !!data.stalled;
