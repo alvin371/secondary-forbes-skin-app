@@ -3467,7 +3467,7 @@ class Endorse extends BaseController
 
         $date = $_GET['date'];
 
-        $qry = " DATE(endorse_logs.date) = '$date' ";
+        $qry = " endorse_logs.date = '$date' ";
         $qry_endorse = "";
 
         $id_campaign = $_GET['id_campaign'];
