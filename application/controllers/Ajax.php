@@ -165,6 +165,8 @@ class Ajax extends CI_Controller
 		// Detail campaign (opsional)
 		$detail = $this->mymodel->selectWithQuery("SELECT * FROM endorse_campaign WHERE id = '$id_campaign'");
 		$detail = $detail ? $detail[0] : null;
+        $this->load->library('endorse_sync');
+        $canonicalLogs = $this->endorse_sync->canonical_logs_from('endorse_logs');
 
         $keyword_category = $_GET['keyword_category'] ? $_GET['keyword_category'] : "Nama Creator";
         $keyword = $_GET['keyword'];
@@ -377,7 +379,7 @@ class Ajax extends CI_Controller
                         SUM(endorse_logs.total_cost)                                      AS cost,
                         COUNT(endorse_logs.id)                                            AS endorse,
                         $qry_opt                                                           AS opt
-                    FROM endorse_logs
+                    FROM {$canonicalLogs}
                     INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
                     $log_join_campaign
                     WHERE 1=1
@@ -397,7 +399,7 @@ class Ajax extends CI_Controller
                         SUM(endorse_logs.total_cost)                                      AS cost,
                         COUNT(endorse_logs.id)                                            AS endorse,
                         $qry_opt                                                           AS opt
-                    FROM endorse_logs
+                    FROM {$canonicalLogs}
                     INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
                     $log_join_campaign
                     WHERE 1=1
@@ -419,7 +421,7 @@ class Ajax extends CI_Controller
                         SUM(endorse_logs.total_cost)         AS cost,
                         COUNT(endorse_logs.id)               AS endorse,
                         $qry_opt                              AS opt
-                    FROM endorse_logs
+                    FROM {$canonicalLogs}
                     INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
                     $log_join_campaign
                     WHERE 1=1
@@ -439,7 +441,7 @@ class Ajax extends CI_Controller
                         SUM(endorse_logs.total_cost)         AS cost,
                         COUNT(endorse_logs.id)               AS endorse,
                         $qry_opt                              AS opt
-                    FROM endorse_logs
+                    FROM {$canonicalLogs}
                     INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
                     $log_join_campaign
                     WHERE 1=1

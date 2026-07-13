@@ -26,6 +26,22 @@ class Endorse_sync
     }
 
     /**
+     * Returns a canonical endorse_logs subquery with one latest row per (id_endorse, date).
+     */
+    public function canonical_logs_from(string $alias = 'endorse_logs'): string
+    {
+        return "(
+            SELECT l.*
+            FROM endorse_logs l
+            INNER JOIN (
+                SELECT id_endorse, date, MAX(id) AS max_id
+                FROM endorse_logs
+                GROUP BY id_endorse, date
+            ) latest ON latest.max_id = l.id
+        ) {$alias}";
+    }
+
+    /**
      * Classify a Template::get_social_media response for retry decisions.
      */
     public function classify_response(array $response, string $platform, string $url): array
@@ -184,14 +200,6 @@ class Endorse_sync
 
         $db->update('endorse', $endorseUpdate, ['id' => $id_endorse]);
 
-        // endorse_logs upsert for today.
-        $existing = $this->CI->mymodel->selectWithQuery("
-            SELECT id FROM endorse_logs
-            WHERE id_endorse = '$id_endorse' AND date = '$today'
-            ORDER BY id DESC LIMIT 1
-        ");
-        $existing_log_id = !empty($existing) ? intval($existing[0]['id']) : 0;
-
         $views_diff      = max(0, $stats['views']      - $prev_views);
         $likes_diff      = max(0, $stats['likes']      - $prev_likes);
         $comment_diff    = max(0, $stats['comment']    - $prev_comment);
@@ -235,15 +243,7 @@ class Endorse_sync
             'cpm_before'        => strval($cpm_before),
         ];
 
-        if ($existing_log_id) {
-            $logRow['updated_at'] = date('Y-m-d H:i:s');
-            $logRow['updated_by'] = strval($user_id);
-            $db->update('endorse_logs', $logRow, ['id' => $existing_log_id]);
-        } else {
-            $logRow['created_at'] = date('Y-m-d H:i:s');
-            $logRow['created_by'] = strval($user_id);
-            $db->insert('endorse_logs', $logRow);
-        }
+        $this->upsert_daily_log_row($logRow, $user_id);
 
         return [
             'status'      => true,
@@ -269,12 +269,13 @@ class Endorse_sync
         }
 
         $idList = implode(',', $endorse_ids);
+        $canonicalLogs = $this->canonical_logs_from('t');
         $rows = $this->CI->mymodel->selectWithQuery("
             SELECT t.id_endorse, t.likes_after, t.comment_after, t.share_save_after, t.views_after
-            FROM endorse_logs t
+            FROM {$canonicalLogs}
             INNER JOIN (
                 SELECT id_endorse, MAX(date) AS max_date
-                FROM endorse_logs
+                FROM {$canonicalLogs}
                 WHERE id_endorse IN ($idList)
                   AND date < '$today'
                   AND views_after > 0
@@ -297,6 +298,7 @@ class Endorse_sync
     {
         $db = $this->CI->db;
         $today = date('Y-m-d');
+        $canonicalLogs = $this->canonical_logs_from('endorse_logs');
 
         $existing = $this->CI->mymodel->selectWithQuery("
             SELECT id FROM endorse_campaign_logs
@@ -329,7 +331,7 @@ class Endorse_sync
                    SUM(likes_before) as likes_before, SUM(comment_before) as comment_before,
                    SUM(share_save_before) as share_save_before, SUM(views_before) as views_before,
                    AVG(cpm_before) as cpm_before
-            FROM endorse_logs
+            FROM {$canonicalLogs}
             WHERE id_campaign = '$id_campaign'
         ");
         $logTotals = $logTotals[0];
@@ -402,13 +404,49 @@ class Endorse_sync
 
     private function load_prev_stats(int $id_endorse, string $today): array
     {
+        $canonicalLogs = $this->canonical_logs_from('endorse_logs');
         $rows = $this->CI->mymodel->selectWithQuery("
             SELECT likes_after, comment_after, share_save_after, views_after
-            FROM endorse_logs
+            FROM {$canonicalLogs}
             WHERE id_endorse = '$id_endorse' AND date < '$today' AND views_after > 0
             ORDER BY date DESC LIMIT 1
         ");
         return !empty($rows) ? $rows[0] : [];
+    }
+
+    public function upsert_daily_log_row(array $logRow, int $user_id): int
+    {
+        $db = $this->CI->db;
+        $id_endorse = intval($logRow['id_endorse'] ?? 0);
+        $date = strval($logRow['date'] ?? '');
+        $existing = $this->CI->mymodel->selectWithQuery("
+            SELECT id
+            FROM endorse_logs
+            WHERE id_endorse = '$id_endorse' AND date = '$date'
+            ORDER BY id DESC
+            LIMIT 1
+        ");
+        $existing_log_id = !empty($existing) ? intval($existing[0]['id']) : 0;
+
+        if ($existing_log_id > 0) {
+            $logRow['updated_at'] = date('Y-m-d H:i:s');
+            $logRow['updated_by'] = strval($user_id);
+            $db->update('endorse_logs', $logRow, ['id' => $existing_log_id]);
+            $db->query("
+                DELETE FROM endorse_logs
+                WHERE id_endorse = ?
+                  AND date = ?
+                  AND id <> ?
+            ", [$id_endorse, $date, $existing_log_id]);
+
+            return $existing_log_id;
+        }
+
+        $logRow['created_at'] = date('Y-m-d H:i:s');
+        $logRow['created_by'] = strval($user_id);
+        $db->insert('endorse_logs', $logRow);
+
+        return intval($db->insert_id());
     }
 
     private function lookup_follower(int $id_influencer): int

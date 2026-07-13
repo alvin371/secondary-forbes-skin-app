@@ -1422,128 +1422,14 @@ class Endorse extends BaseController
         }
 
         $user_id = intval($user['id'] ?? 0);
-        $total_cost = doubleval($v['total_cost'] ?? 0);
-        $query_today = $this->mymodel->selectWithQuery("SELECT id
-            FROM endorse_logs
-            WHERE id_endorse = '$id_endorse' AND date = '$today'
-            LIMIT 1");
-        $today_log = $query_today[0] ?? [];
-
-        $query_yesterday = $this->mymodel->selectWithQuery("SELECT *
-            FROM endorse_logs
-            WHERE id_endorse = '$id_endorse' AND date < '$today' AND views_after > 0
-            ORDER BY date DESC
-            LIMIT 1");
-        $prev = $query_yesterday[0] ?? [];
-
-        $prev_likes = intval($prev['likes_after'] ?? 0);
-        $prev_comment = intval($prev['comment_after'] ?? 0);
-        $prev_share_save = intval($prev['share_save_after'] ?? 0);
-        $prev_views = intval($prev['views_after'] ?? 0);
-
         $response = $this->template->get_social_media($v['platform'], $v['link_upload']);
-        $response_data = (is_array($response) && isset($response['data']) && is_array($response['data'])) ? $response['data'] : [];
         if (is_array($response) && isset($response['status']) && $response['status'] === false) {
             $errors[] = "ID $id_endorse: " . ($response['msg'] ?? 'Gagal mengambil data social media.');
         }
 
-        $likes_after = $prev_likes;
-        $comment_after = $prev_comment;
-        $share_after = $prev_share_save;
-        $views_after = $prev_views;
-
-        if (intval($response_data['view'] ?? 0) > 0) {
-            $likes_after = intval($response_data['like'] ?? 0);
-            $comment_after = intval($response_data['comment'] ?? 0);
-            $share_after = doubleval($response_data['share'] ?? 0) + doubleval($response_data['collect'] ?? 0);
-            $views_after = intval($response_data['view'] ?? 0);
-        }
-
-        $is_fyp = isset($v['is_fyp']) ? strval($v['is_fyp']) : '0';
-        if ($views_after >= 50000) {
-            $id_influencer = intval($v['influencer'] ?? 0);
-            if ($id_influencer > 0) {
-                $creator = $this->mymodel->selectWithQuery("SELECT follower FROM influencer WHERE id = '$id_influencer' LIMIT 1");
-                $follower = intval($creator[0]['follower'] ?? 0);
-                if ($follower > 0) {
-                    $batas = intval($follower * 30 / 100);
-                    if ($views_after >= $batas) {
-                        $is_fyp = '1';
-                    }
-                } else {
-                    $is_fyp = '1';
-                }
-            } else {
-                $is_fyp = '1';
-            }
-        }
-
-        $cpm_after = ($total_cost > 0 && $views_after > 0) ? ($total_cost / $views_after * 1000) : 0;
-        $likes_delta = $likes_after - $prev_likes;
-        $comment_delta = $comment_after - $prev_comment;
-        $share_delta = $share_after - $prev_share_save;
-        $views_delta = $views_after - $prev_views;
-        $cpm_delta = ($total_cost > 0 && $views_delta > 0) ? ($total_cost / $views_delta * 1000) : 0;
-        $cpm_before = ($total_cost > 0 && $prev_views > 0) ? ($total_cost / $prev_views * 1000) : 0;
-
-        $now = DATE("Y-m-d H:i:s");
-        $endorse_update = [
-            'status' => strval($v['status'] ?? ''),
-            'status_campaign' => strval($v['status_campaign'] ?? ''),
-            'likes' => doubleval($likes_after),
-            'comment' => doubleval($comment_after),
-            'share_save' => doubleval($share_after),
-            'views' => doubleval($views_after),
-            'cpm' => doubleval($cpm_after),
-            'is_fyp' => strval($is_fyp),
-            'sync_at' => $now,
-            'posting_at' => strval($response_data['created_at'] ?? ($v['posting_at'] ?? '')),
-            'updated_at' => $now
-        ];
-        if ($user_id > 0) {
-            $endorse_update['updated_by'] = strval($user_id);
-        }
-        $this->db->update('endorse', $endorse_update, ['id' => $id_endorse]);
-
-        $log_payload = [
-            'status' => strval($v['status'] ?? ''),
-            'status_campaign' => strval($v['status_campaign'] ?? ''),
-            'id_endorse' => strval($id_endorse),
-            'id_campaign' => strval($v['id_campaign'] ?? 0),
-            'influencer' => strval($v['influencer'] ?? ''),
-            'date' => $today,
-            'total_cost' => doubleval($total_cost),
-            'link_upload' => strval($v['link_upload'] ?? ''),
-            'platform' => strval($v['platform'] ?? ''),
-            'likes' => doubleval($likes_delta),
-            'comment' => doubleval($comment_delta),
-            'share_save' => doubleval($share_delta),
-            'views' => doubleval($views_delta),
-            'cpm' => doubleval($cpm_delta),
-            'likes_before' => intval($prev_likes),
-            'comment_before' => intval($prev_comment),
-            'share_save_before' => intval($prev_share_save),
-            'views_before' => intval($prev_views),
-            'cpm_before' => doubleval($cpm_before),
-            'likes_after' => intval($likes_after),
-            'comment_after' => intval($comment_after),
-            'share_save_after' => intval($share_after),
-            'views_after' => intval($views_after),
-            'cpm_after' => doubleval($cpm_after)
-        ];
-
-        if (!empty($today_log['id'])) {
-            $log_payload['updated_at'] = $now;
-            if ($user_id > 0) {
-                $log_payload['updated_by'] = strval($user_id);
-            }
-            $this->db->update('endorse_logs', $log_payload, ['id' => intval($today_log['id'])]);
-        } else {
-            $log_payload['created_at'] = $now;
-            if ($user_id > 0) {
-                $log_payload['created_by'] = strval($user_id);
-            }
-            $this->db->insert('endorse_logs', $log_payload);
+        $apply = $this->endorse_sync->apply($v, is_array($response) ? $response : [], $user_id);
+        if (!($apply['status'] ?? false)) {
+            $errors[] = "ID $id_endorse: " . ($apply['msg'] ?? 'Gagal menyimpan data social media.');
         }
     }
 
@@ -2492,9 +2378,10 @@ class Endorse extends BaseController
         ];
 
         $today_esc = $this->db->escape($today);
+        $canonicalLogs = $this->endorse_sync->canonical_logs_from('endorse_logs');
         $prev_log = $this->mymodel->selectWithQuery("
             SELECT likes_after, comment_after, share_save_after, views_after
-            FROM endorse_logs
+            FROM {$canonicalLogs}
             WHERE id_endorse = {$id}
               AND date < {$today_esc}
             ORDER BY date DESC
@@ -2552,27 +2439,9 @@ class Endorse extends BaseController
             $log_payload['brand'] = (string) $endorse['brand'];
         }
 
-        $today_log = $this->mymodel->selectWithQuery("
-            SELECT id
-            FROM endorse_logs
-            WHERE id_endorse = {$id}
-              AND date = {$today_esc}
-            LIMIT 1
-        ");
-        $today_log = $today_log[0] ?? null;
-
         $this->db->trans_start();
         $this->db->update('endorse', $update_endorse, ['id' => $id]);
-
-        if (!empty($today_log['id'])) {
-            $log_payload['updated_at'] = $now;
-            $log_payload['updated_by'] = (string) $user['id'];
-            $this->db->update('endorse_logs', $log_payload, ['id' => $today_log['id']]);
-        } else {
-            $log_payload['created_at'] = $now;
-            $log_payload['created_by'] = (string) $user['id'];
-            $this->db->insert('endorse_logs', $log_payload);
-        }
+        $this->endorse_sync->upsert_daily_log_row($log_payload, intval($user['id'] ?? 0));
         $this->db->trans_complete();
 
         if ($this->db->trans_status() === false) {
@@ -3466,6 +3335,7 @@ class Endorse extends BaseController
         $data['title'] = 'Campaign Logs - ' . $this->template->title();
 
         $date = $_GET['date'];
+        $canonicalLogs = $this->endorse_sync->canonical_logs_from('endorse_logs');
 
         $qry = " endorse_logs.date = '$date' ";
         $qry_endorse = "";
@@ -3477,7 +3347,7 @@ class Endorse extends BaseController
             $qry_endorse .= " AND endorse.id_campaign = '$id_campaign' ";
         }
 
-        $ids_campaign = $_GET['ids_campaign'];
+        $ids_campaign = isset($_GET['ids_campaign']) && is_array($_GET['ids_campaign']) ? $_GET['ids_campaign'] : [];
         $text = '';
         foreach ($ids_campaign as $k => $v) {
             $text .= "'" . $v . "',";
@@ -3532,17 +3402,23 @@ class Endorse extends BaseController
 			");
 
         $list_ids = '';
+        $endorseIdFilter = '';
         foreach ($query as $k => $v) {
-            $text .= "'" . $v['id'] . "',";
+            $endorseIdFilter .= "'" . $v['id'] . "',";
         }
-        $text = substr($text, 0, -1);
+        $endorseIdFilter = substr($endorseIdFilter, 0, -1);
 
-        if ($text) {
-            $qry .= " AND id_endorse IN ($text) ";
+        if ($endorseIdFilter) {
+            $qry .= " AND endorse_logs.id_endorse IN ($endorseIdFilter) ";
         }
 
-        $data['data'] = $this->mymodel->selectWithQuery("SELECT *
-        FROM endorse_logs
+        $data['data'] = $this->mymodel->selectWithQuery("SELECT endorse_logs.*,
+        endorse.nama_creator,
+        endorse.pic,
+        endorse.task,
+        endorse.`desc`,
+        endorse.status_endorse
+        FROM {$canonicalLogs}
         INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
         WHERE $qry
         ORDER BY endorse_logs.id DESC");

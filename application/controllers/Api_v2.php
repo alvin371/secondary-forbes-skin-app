@@ -4557,12 +4557,7 @@ class Api_v2 extends CI_Controller
 
     function cronjob_endorse()
     {
-
-
-        $user = $_SESSION['user'];
-
         $mode = strval($_GET['mode']);
-
         $target = DATE("Y-m-d 11:00:00");
         $now = DATE("Y-m-d H:i:s");
         if ($mode != 'true') {
@@ -4579,188 +4574,40 @@ class Api_v2 extends CI_Controller
             }
         }
         $today = DATE("Y-m-d");
-        // $today = DATE('Y-m-d', strtotime($today . " -1 days"));
-        $todayy = $today;
+        $this->load->library('endorseRefreshQueueService');
+        $campaigns = $this->mymodel->selectWithQuery("
+            SELECT DISTINCT id_campaign
+            FROM endorse
+            WHERE status = 'Aktif'
+              AND status_campaign = 'Aktif'
+              AND (DATE(sync_at) < '$today' OR DATE(sync_at) IS NULL)
+              AND link_upload != ''
+              AND id_campaign > 0
+        ");
 
-        $list = $this->mymodel->selectWithQuery("SELECT * FROM endorse WHERE status = 'Aktif' AND status_campaign = 'Aktif' AND (DATE(sync_at) < '$today' OR DATE(sync_at) IS NULL) AND link_upload != '' LIMIT 10");
-
-        foreach ($list as $kl => $vl) {
-
-            $id_endorse = $vl['id'];
-            $v = $vl;
-            $today = DATE("Y-m-d");
-            $yesterday = DATE('Y-m-d', strtotime($today . " -1 days"));
-
-            $query = $this->mymodel->selectWithQuery("SELECT id
-            FROM endorse_logs
-            WHERE id_endorse = '$id_endorse' AND date = '$today' ");
-            $query = $query[0];
-            $query_yesterday = $this->mymodel->selectWithQuery("SELECT * 
-            FROM endorse_logs
-            WHERE id_endorse = '$id_endorse' AND date < '$today' AND views_after > 0 ORDER BY date DESC LIMIT 1 ");
-            $query_yesterday = $query_yesterday[0];
-
-
-            $dt = array();
-            $dt['status'] = strval($v['status']);
-            $dt['status_campaign'] = strval($v['status_campaign']);
-            $dt['id_endorse'] = strval($v['id']);
-            $dt['id_campaign'] = strval($v['id_campaign']);
-            $dt['influencer'] = strval($v['influencer']);
-            $dt['date'] = $today;
-
-
-            $response = $this->template->get_social_media($v['platform'], $v['link_upload']);
-
-            $dts = array();
-            $dts['sync_at'] = DATE("Y-m-d H:i:s");
-            if ($response['data']['created_at']) {
-                $dts['posting_at'] = $response['data']['created_at'];
+        $summary = [
+            'campaigns' => 0,
+            'enqueued' => 0,
+            'skipped_duplicates' => 0,
+            'excluded_known_url' => 0,
+        ];
+        foreach ($campaigns as $campaign) {
+            $id_campaign = intval($campaign['id_campaign'] ?? 0);
+            if ($id_campaign <= 0) {
+                continue;
             }
-
-            $this->db->update('endorse', $dts, array('id' => $v['id']));
-
-            // if ($response['data']['view'] > 0) {
-
-            $dt['likes'] = intval($query_yesterday['likes_after']);
-            $dt['comment'] = intval($query_yesterday['comment_after']);
-            $dt['share_save'] = intval($query_yesterday['share_save_after']);
-            $dt['views'] = intval($query_yesterday['views_after']);
-
-            if ($response['data']['view'] > 0) {
-                $dt['likes'] = $response['data']['like'];
-                $dt['comment'] = $response['data']['comment'];
-                $dt['share_save'] = doubleval($response['data']['share']) + doubleval($response['data']['collect']);
-                $dt['views'] = $response['data']['view'];
-            }
-
-            if ($dt['views'] >= 50000) {
-                $id_influencer = $vl['influencer'];
-                $creator = $this->mymodel->selectWithQuery("SELECT follower
-                    FROM influencer WHERE id = '$id_influencer'");
-                $creator = $creator[0];
-                $percentage = 0;
-                $follower = intval($creator['follower']);
-                if ($follower > 0) {
-                    $batas = intval($follower * 30 / 100);
-                    if ($dt['views'] >= $batas) {
-                        $dt['is_fyp'] = "1";
-                    }
-                } else {
-                    $dt['is_fyp'] = "1";
-                }
-            }
-
-
-
-            $dtt = $dt;
-            unset($dt['is_fyp']);
-            unset($dtt['id_endorse']);
-            unset($dtt['id_campaign']);
-            unset($dtt['date']);
-            $dtt['updated_at'] = DATE("Y-m-d H:i:s");
-
-            $this->db->update('endorse', $dtt, array('id' => $id_endorse));
-
-
-            if ($v['total_cost'] > 0 && $dt['views'] > 0) {
-                $dt['cpm'] = doubleval($v['total_cost']) / doubleval($dt['views']) * 1000;
-            } else {
-                $dt['cpm'] = 0;
-            }
-
-            $dtt = array();
-            $dtt['likes'] = doubleval($dt['likes']);
-            $dtt['comment'] = doubleval($dt['comment']);
-            $dtt['share_save'] = doubleval($dt['share_save']);
-            $dtt['views'] = doubleval($dt['views']);
-            $dtt['cpm'] = doubleval($dt['cpm']);
-
-            $dt['total_cost'] = doubleval($v['total_cost']);
-
-            $dt['link_upload'] = strval($v['link_upload']);
-            $dt['platform'] = strval($v['platform']);
-
-            $dt['likes_after'] = intval($dt['likes']);
-            $dt['comment_after'] = intval($dt['comment']);
-            $dt['share_save_after'] = intval($dt['share_save']);
-            $dt['views_after'] = intval($dt['views']);
-
-            if ($v['total_cost'] > 0 && $dt['views_after'] > 0) {
-                $dt['cpm_after'] = doubleval($v['total_cost']) / doubleval($dt['views_after']) * 1000;
-            } else {
-                $dt['cpm_after'] = 0;
-            }
-
-            $dt['likes'] -= intval($query_yesterday['likes_after']);
-            $dt['comment'] -= intval($query_yesterday['comment_after']);
-            $dt['share_save'] -= intval($query_yesterday['share_save_after']);
-            $dt['views'] -= intval($query_yesterday['views_after']);
-
-            if ($v['total_cost'] > 0 && $dt['views'] > 0) {
-                $dt['cpm'] = doubleval($v['total_cost']) / doubleval($dt['views']) * 1000;
-            } else {
-                $dt['cpm'] = 0;
-            }
-
-            $dt['likes_before'] = intval($query_yesterday['likes_after']);
-            $dt['comment_before'] = intval($query_yesterday['comment_after']);
-            $dt['share_save_before'] = intval($query_yesterday['share_save_after']);
-            $dt['views_before'] = intval($query_yesterday['views_after']);
-
-            if ($v['total_cost'] > 0 && $dt['views_before'] > 0) {
-                $dt['cpm_before'] = doubleval($v['total_cost']) / doubleval($dt['views_before']) * 1000;
-            } else {
-                $dt['cpm_before'] = 0;
-            }
-            // }
-
-            // $dt['is_cron'] = '1';
-            // print_r($dt);die;
-            $dt['brand'] = strval($vl['brand']);
-
-            $dt_tmp = array();
-            foreach ($dt as $kt => $vt) {
-                $dt_tmp[$kt] = strval($vt);
-            }
-            $dt = $dt_tmp;
-
-            if ($query) {
-                $dt['updated_at'] = DATE("Y-m-d H:i:s");
-                $dt['updated_by'] = strval($user['id']);
-                $this->db->update('endorse_logs', $dt, array('id' => $query['id']));
-                $id_parent = $query['id'];
-            } else {
-                $dt['created_at'] = DATE("Y-m-d H:i:s");
-                $dt['created_by'] = strval($user['id']);
-                $this->db->insert('endorse_logs', $dt);
-                $id_parent = $this->db->insert_id();
-            }
-
-            $dt_tmp = array();
-            foreach ($dtt as $kt => $vt) {
-                $dt_tmp[$kt] = strval($vt);
-            }
-            $dtt = $dt_tmp;
-
-            $dtt['updated_at'] = DATE("Y-m-d H:i:s");
-            $dtt['updated_by'] = strval($user['id']);
-            $this->db->update('endorse', $dtt, array('id' => $v['id']));
-        }
-
-        $data = $this->mymodel->selectWithQuery("SELECT id
-        FROM endorse_campaign 
-        WHERE status = 'Aktif'");
-        foreach ($data as $k => $v) {
-            $id_parent = $v['id'];
-            $this->update_endorse_parent($id_parent, $v);
+            $result = $this->endorserefreshqueueservice->enqueueCampaign($id_campaign, 0);
+            $summary['campaigns']++;
+            $summary['enqueued'] += intval($result['enqueued'] ?? 0);
+            $summary['skipped_duplicates'] += intval($result['skipped_duplicates'] ?? 0);
+            $summary['excluded_known_url'] += intval($result['excluded_known_url'] ?? 0);
         }
 
         header('Content-Type: application/json; charset=utf-8');
         $html = array();
         $html['status'] = true;
-        $html['data'] = array();
-        $html['msg'] = count($list) . " data endorse yg di sync <= $todayy berhasil diperbarui";
+        $html['data'] = $summary;
+        $html['msg'] = $summary['enqueued'] . " konten dimasukkan ke antrian refresh dari " . $summary['campaigns'] . " campaign aktif. " . $summary['skipped_duplicates'] . " sudah ada di antrian, " . $summary['excluded_known_url'] . " dilewati karena URL bermasalah.";
         echo json_encode($html, true);
         die;
     }
