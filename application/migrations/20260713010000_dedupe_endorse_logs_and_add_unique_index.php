@@ -18,11 +18,11 @@ class Migration_Dedupe_endorse_logs_and_add_unique_index extends CI_Migration
         $this->emit('Deleted duplicate endorse_logs rows: ' . $deleted);
 
         if ($this->index_exists($this->table, $this->legacyIndex)) {
-            $this->db->query("DROP INDEX {$this->legacyIndex} ON {$this->table}");
+            $this->must_query("DROP INDEX {$this->legacyIndex} ON {$this->table}");
         }
 
         if (!$this->index_exists($this->table, $this->uniqueIndex)) {
-            $this->db->query("
+            $this->must_query("
                 ALTER TABLE {$this->table}
                 ADD UNIQUE INDEX {$this->uniqueIndex} (id_endorse, date)
             ");
@@ -36,11 +36,11 @@ class Migration_Dedupe_endorse_logs_and_add_unique_index extends CI_Migration
         }
 
         if ($this->index_exists($this->table, $this->uniqueIndex)) {
-            $this->db->query("DROP INDEX {$this->uniqueIndex} ON {$this->table}");
+            $this->must_query("DROP INDEX {$this->uniqueIndex} ON {$this->table}");
         }
 
         if (!$this->index_exists($this->table, $this->legacyIndex)) {
-            $this->db->query("
+            $this->must_query("
                 CREATE INDEX {$this->legacyIndex}
                 ON {$this->table} (id_endorse, date)
             ");
@@ -52,20 +52,44 @@ class Migration_Dedupe_endorse_logs_and_add_unique_index extends CI_Migration
         $deletedTotal = 0;
 
         do {
-            $this->db->query("
-                DELETE l1
+            $duplicateRows = $this->db->query("
+                SELECT l1.id
                 FROM {$this->table} l1
                 INNER JOIN {$this->table} l2
                     ON l1.id_endorse = l2.id_endorse
                    AND l1.date = l2.date
                    AND l1.id < l2.id
                 LIMIT 10000
-            ");
-            $deletedNow = intval($this->db->affected_rows());
+            ")->result_array();
+
+            $ids = [];
+            foreach ($duplicateRows as $row) {
+                $id = intval($row['id'] ?? 0);
+                if ($id > 0) {
+                    $ids[] = $id;
+                }
+            }
+
+            if (empty($ids)) {
+                $deletedNow = 0;
+                continue;
+            }
+
+            $idList = implode(',', $ids);
+            $this->must_query("DELETE FROM {$this->table} WHERE id IN ({$idList})");
+            $deletedNow = count($ids);
             $deletedTotal += max(0, $deletedNow);
         } while ($deletedNow > 0);
 
         return $deletedTotal;
+    }
+
+    private function must_query(string $sql): void
+    {
+        $result = $this->db->query($sql);
+        if ($result === false) {
+            throw new RuntimeException('Migration SQL failed: ' . $sql);
+        }
     }
 
     private function index_exists($table, $index): bool
