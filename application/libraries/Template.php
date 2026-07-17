@@ -355,704 +355,1224 @@ class Template
         return $lastResponse;
     }
 
-    function getTikTokRapidApiHeaders($host = null)
+    function getRapidApiHeaders()
     {
-        $rapidapi_host = $host ?: env('RAPIDAPI_HOST', 'tiktok-video-no-watermark10.p.rapidapi.com');
-        $rapidapi_key = env('RAPIDAPI_KEY', '');
+        $cfg = $this->getRapidApiConfig();
         return [
-            "Content-Type: application/json",
-            "x-rapidapi-host: {$rapidapi_host}",
-            "x-rapidapi-key: {$rapidapi_key}"
+            "Accept: application/json",
+            "x-rapidapi-host: " . $cfg['host'],
+            "x-rapidapi-key: " . $cfg['key'],
         ];
     }
 
-    function get_account_id($type, $url, $timeout = 30)
+    protected function getRapidApiConfig(): array
     {
-        $timeout = $this->normalize_timeout($timeout, 30);
-        $response = [
+        return [
+            'host' => trim((string) env('RAPIDAPI_HOST', 'tiktok-video-no-watermark10.p.rapidapi.com')),
+            'key' => trim((string) env('RAPIDAPI_KEY', '')),
+        ];
+    }
+
+    protected function rapidApiConfigError(): ?array
+    {
+        $cfg = $this->getRapidApiConfig();
+        if ($cfg['host'] !== '' && $cfg['key'] !== '') {
+            return null;
+        }
+
+        return [
+            'status' => false,
+            'msg' => 'Konfigurasi RapidAPI tidak lengkap (RAPIDAPI_HOST/RAPIDAPI_KEY).',
+            'data' => [],
+            'error_class' => 'config',
+            'error_meta' => [
+                'http_code' => 0,
+                'curl_errno' => 0,
+                'curl_error' => '',
+                'rapidapi_code' => 'n/a',
+                'rapidapi_msg' => 'n/a',
+                'json_error' => '',
+                'body_snippet' => '',
+                'total_time' => 0.0,
+                'time_namelookup' => 0.0,
+                'time_connect' => 0.0,
+                'time_appconnect' => 0.0,
+                'time_starttransfer' => 0.0,
+                'multi_result' => 0,
+                'request_id' => '',
+                'region' => '',
+                'rate_remaining' => '',
+                'cf_ray' => '',
+            ],
+        ];
+    }
+
+    protected function finalizeRapidApiJsonResponse(string $body, array $meta = []): array
+    {
+        $meta = array_merge([
+            'http_code' => 0,
+            'curl_errno' => 0,
+            'curl_error' => '',
+            'rapidapi_code' => 'n/a',
+            'rapidapi_msg' => 'n/a',
+            'json_error' => '',
+            'body_snippet' => '',
+            'total_time' => 0.0,
+            'time_namelookup' => 0.0,
+            'time_connect' => 0.0,
+            'time_appconnect' => 0.0,
+            'time_starttransfer' => 0.0,
+            'multi_result' => 0,
+            'request_id' => '',
+            'region' => '',
+            'rate_remaining' => '',
+            'cf_ray' => '',
+        ], $meta);
+
+        $meta['http_code'] = intval($meta['http_code']);
+        $meta['curl_errno'] = intval($meta['curl_errno']);
+        $meta['curl_error'] = strval($meta['curl_error']);
+        $meta['total_time'] = doubleval($meta['total_time']);
+        $meta['time_namelookup'] = doubleval($meta['time_namelookup']);
+        $meta['time_connect'] = doubleval($meta['time_connect']);
+        $meta['time_appconnect'] = doubleval($meta['time_appconnect']);
+        $meta['time_starttransfer'] = doubleval($meta['time_starttransfer']);
+        $meta['multi_result'] = intval($meta['multi_result']);
+        $meta['request_id'] = strval($meta['request_id']);
+        $meta['region'] = strval($meta['region']);
+        $meta['rate_remaining'] = strval($meta['rate_remaining']);
+        $meta['cf_ray'] = strval($meta['cf_ray']);
+        $meta['body_snippet'] = $this->summarizeBodySnippet($body);
+
+        if ($meta['curl_errno'] !== 0 || $meta['http_code'] === 0) {
+            if ($meta['curl_error'] === '' && function_exists('curl_strerror') && $meta['curl_errno'] !== 0) {
+                $meta['curl_error'] = curl_strerror($meta['curl_errno']);
+            }
+            $errorClass = $this->classifyRapidApiTransportFailure($meta);
+            return $this->rapidApiFailureResponse(
+                $errorClass,
+                $this->buildGenericRapidApiFailureMessage('RapidAPI host tidak dapat dijangkau', $meta),
+                $meta
+            );
+        }
+
+        $decoded = json_decode($body, true);
+        if (!is_array($decoded)) {
+            $meta['json_error'] = json_last_error_msg();
+            $errorClass = ($meta['http_code'] === 401 || $meta['http_code'] === 403) ? 'config' : 'transient';
+            $prefix = ($errorClass === 'config')
+                ? 'RapidAPI menolak request'
+                : 'RapidAPI mengembalikan body yang tidak valid';
+            return $this->rapidApiFailureResponse(
+                $errorClass,
+                $this->buildGenericRapidApiFailureMessage($prefix, $meta),
+                $meta
+            );
+        }
+
+        $meta['rapidapi_code'] = strval($decoded['code'] ?? 'n/a');
+        $meta['rapidapi_msg'] = $this->normalizeRapidApiMessage($decoded['msg'] ?? 'n/a');
+
+        if ($meta['http_code'] === 401 || $meta['http_code'] === 403 || $this->isRapidApiAuthFailure($decoded)) {
+            return $this->rapidApiFailureResponse(
+                'config',
+                $this->buildGenericRapidApiFailureMessage('RapidAPI credentials ditolak', $meta),
+                $meta
+            );
+        }
+
+        if ($meta['http_code'] === 429 || $meta['http_code'] >= 500) {
+            return $this->rapidApiFailureResponse(
+                'transient',
+                $this->buildGenericRapidApiFailureMessage('RapidAPI sementara tidak sehat', $meta),
+                $meta
+            );
+        }
+
+        if ($meta['http_code'] >= 400) {
+            return $this->rapidApiFailureResponse(
+                'permanent',
+                $this->buildGenericRapidApiFailureMessage('RapidAPI menolak request', $meta),
+                $meta
+            );
+        }
+
+        $decoded['_transport'] = $meta;
+        return $decoded;
+    }
+
+    protected function rapidApiFailureResponse(string $errorClass, string $msg, array $meta): array
+    {
+        return [
+            'status' => false,
+            'msg' => $msg,
+            'data' => [],
+            'error_class' => $errorClass,
+            'error_meta' => $meta,
+        ];
+    }
+
+    protected function buildGenericRapidApiFailureMessage(string $prefix, array $meta): string
+    {
+        $msg = $prefix . ': http=' . intval($meta['http_code']);
+
+        if (intval($meta['curl_errno']) !== 0) {
+            $msg .= ' cURL#' . intval($meta['curl_errno']) . '=' . strval($meta['curl_error']);
+        } elseif ($meta['rapidapi_code'] !== 'n/a' || $meta['rapidapi_msg'] !== 'n/a') {
+            $msg .= ' apicode=' . strval($meta['rapidapi_code']) . ' apimsg=' . strval($meta['rapidapi_msg']);
+        } elseif (strval($meta['json_error']) !== '') {
+            $msg .= ' json=' . strval($meta['json_error']);
+        }
+
+        if (strval($meta['body_snippet']) !== '') {
+            $msg .= ' body=' . strval($meta['body_snippet']);
+        }
+
+        if (strval($meta['request_id']) !== '') {
+            $msg .= ' reqid=' . strval($meta['request_id']);
+        }
+        if (strval($meta['region']) !== '') {
+            $msg .= ' region=' . strval($meta['region']);
+        }
+
+        return $msg;
+    }
+
+    protected function normalizeRapidApiMessage($msg): string
+    {
+        $msg = trim(preg_replace('/\s+/', ' ', strval($msg)));
+        if (strlen($msg) > 80) {
+            $msg = substr($msg, 0, 80) . '…';
+        }
+        return $msg === '' ? 'n/a' : $msg;
+    }
+
+    protected function summarizeBodySnippet(string $body): string
+    {
+        $snippet = trim(preg_replace('/\s+/', ' ', $body));
+        if (strlen($snippet) > 180) {
+            $snippet = substr($snippet, 0, 180) . '…';
+        }
+        return $snippet;
+    }
+
+    protected function isRapidApiAuthFailure(array $decoded): bool
+    {
+        $message = strtolower(trim(strval($decoded['msg'] ?? '')));
+        if ($message === '') {
+            return false;
+        }
+
+        foreach (['invalid api key', 'invalid key', 'access denied', 'unauthorized', 'forbidden', 'not subscribed'] as $needle) {
+            if (strpos($message, $needle) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected function isRapidApiFailureResponse($response): bool
+    {
+        return is_array($response)
+            && (array_key_exists('status', $response) ? !$response['status'] : true)
+            && array_key_exists('error_class', $response)
+            && array_key_exists('error_meta', $response);
+    }
+
+    protected function buildRapidApiUrl(string $path, array $query): string
+    {
+        $cfg = $this->getRapidApiConfig();
+        return 'https://' . $cfg['host'] . $path . '?' . http_build_query($query);
+    }
+
+    protected function buildTiktokDetailUrl(string $url, int $hd = 0): string
+    {
+        return $this->buildRapidApiUrl('/index/Tiktok/getVideoInfo', [
+            'url' => $url,
+            'hd' => $hd,
+        ]);
+    }
+
+    protected function buildRapidApiHeaderCollector(array &$headers): callable
+    {
+        return function ($curl, string $headerLine) use (&$headers) {
+            $trimmed = trim($headerLine);
+            if ($trimmed === '' || strpos($trimmed, ':') === false) {
+                return strlen($headerLine);
+            }
+
+            list($name, $value) = explode(':', $trimmed, 2);
+            $headers[strtolower(trim($name))] = trim($value);
+
+            return strlen($headerLine);
+        };
+    }
+
+    protected function captureRapidApiHeaderMeta(array $headers): array
+    {
+        return [
+            'request_id' => strval($headers['x-rapidapi-request-id'] ?? ''),
+            'region' => strval($headers['x-rapidapi-region'] ?? ''),
+            'rate_remaining' => strval($headers['x-ratelimit-request-remaining'] ?? ''),
+            'cf_ray' => strval($headers['cf-ray'] ?? ''),
+        ];
+    }
+
+    protected function classifyRapidApiTransportFailure(array $meta): string
+    {
+        $errno = intval($meta['curl_errno'] ?? 0);
+        $nameLookup = doubleval($meta['time_namelookup'] ?? 0);
+        $connect = doubleval($meta['time_connect'] ?? 0);
+        $appConnect = doubleval($meta['time_appconnect'] ?? 0);
+        $startTransfer = doubleval($meta['time_starttransfer'] ?? 0);
+        $total = doubleval($meta['total_time'] ?? 0);
+        $threshold = max(0.25, min(1.0, $total * 0.1));
+
+        if ($errno === 6 || $nameLookup <= 0 || ($total > 0 && $nameLookup >= ($total - $threshold))) {
+            return 'infra_dns';
+        }
+
+        if ($errno === 7 || $connect <= 0 || ($total > 0 && $connect >= ($total - $threshold))) {
+            return 'infra_connect';
+        }
+
+        if ($errno === 35 || $appConnect <= 0 || ($total > 0 && $appConnect >= ($total - $threshold))) {
+            return 'infra_tls';
+        }
+
+        if ($errno === 28 && $startTransfer <= 0) {
+            return 'infra_stall';
+        }
+
+        return 'infra';
+    }
+
+    protected function executeRapidApiGet(string $url, array $headers = [], int $timeoutSec = 12): array
+    {
+        $configError = $this->rapidApiConfigError();
+        if ($configError !== null) {
+            return $configError;
+        }
+
+        $responseHeaders = [];
+        $curl = curl_init();
+        curl_setopt_array($curl, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_ENCODING => "",
+            CURLOPT_MAXREDIRS => 10,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => $timeoutSec,
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+            CURLOPT_CUSTOMREQUEST => "GET",
+            CURLOPT_HTTPHEADER => !empty($headers) ? $headers : $this->getRapidApiHeaders(),
+            CURLOPT_HEADERFUNCTION => $this->buildRapidApiHeaderCollector($responseHeaders),
+        ]);
+
+        $response = curl_exec($curl);
+        $httpCode = intval(curl_getinfo($curl, CURLINFO_HTTP_CODE));
+        $curlErrno = intval(curl_errno($curl));
+        $err = curl_error($curl);
+        $totalTime = doubleval(curl_getinfo($curl, CURLINFO_TOTAL_TIME));
+        $nameLookup = doubleval(curl_getinfo($curl, CURLINFO_NAMELOOKUP_TIME));
+        $connect = doubleval(curl_getinfo($curl, CURLINFO_CONNECT_TIME));
+        $appConnect = doubleval(curl_getinfo($curl, CURLINFO_APPCONNECT_TIME));
+        $startTransfer = doubleval(curl_getinfo($curl, CURLINFO_STARTTRANSFER_TIME));
+        curl_close($curl);
+
+        return $this->finalizeRapidApiJsonResponse((string) $response, array_merge([
+            'http_code' => $httpCode,
+            'curl_errno' => $curlErrno,
+            'curl_error' => $err,
+            'total_time' => $totalTime,
+            'time_namelookup' => $nameLookup,
+            'time_connect' => $connect,
+            'time_appconnect' => $appConnect,
+            'time_starttransfer' => $startTransfer,
+        ], $this->captureRapidApiHeaderMeta($responseHeaders)));
+    }
+
+    protected function isValidRapidApiTiktokDetailResponse($response): bool
+    {
+        if (!is_array($response) || intval($response['code'] ?? -1) !== 0 || !is_array($response['data'] ?? null)) {
+            return false;
+        }
+
+        $item = $response['data'];
+        foreach (['id', 'digg_count', 'share_count', 'comment_count', 'collect_count', 'play_count', 'images', 'play', 'cover', 'origin_cover', 'create_time'] as $key) {
+            if (array_key_exists($key, $item)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected function buildTiktokRapidApiFailureResponse(string $contentId, $response): array
+    {
+        $meta = [
+            'http_code' => 0,
+            'curl_errno' => 0,
+            'curl_error' => '',
+            'rapidapi_code' => 'n/a',
+            'rapidapi_msg' => 'n/a',
+            'json_error' => '',
+            'body_snippet' => '',
+            'total_time' => 0.0,
+            'time_namelookup' => 0.0,
+            'time_connect' => 0.0,
+            'time_appconnect' => 0.0,
+            'time_starttransfer' => 0.0,
+            'multi_result' => 0,
+            'request_id' => '',
+            'region' => '',
+            'rate_remaining' => '',
+            'cf_ray' => '',
+        ];
+        $errorClass = 'transient';
+        $msg = '';
+
+        if ($this->isRapidApiFailureResponse($response)) {
+            $meta = array_merge($meta, $response['error_meta'] ?? []);
+            $errorClass = strval($response['error_class'] ?? 'transient');
+            $msg = strval($response['msg'] ?? '');
+        } elseif (is_array($response)) {
+            $transport = is_array($response['_transport'] ?? null) ? $response['_transport'] : [];
+            $meta = array_merge($meta, $transport);
+            $meta['rapidapi_code'] = strval($response['code'] ?? $meta['rapidapi_code']);
+            $meta['rapidapi_msg'] = $this->normalizeRapidApiMessage($response['msg'] ?? $meta['rapidapi_msg']);
+            $msg = 'RapidAPI returned an unusable TikTok detail payload';
+        } else {
+            $msg = 'RapidAPI returned an unusable TikTok detail payload';
+        }
+
+        $detail = 'tiktok ' . $contentId
+            . ' gagal: http=' . intval($meta['http_code'])
+            . ' apicode=' . strval($meta['rapidapi_code'])
+            . ' apimsg=' . strval($meta['rapidapi_msg'])
+            . ' dataid=' . ((is_array($response) && !empty($response['data']['id'])) ? 1 : 0);
+
+        if (intval($meta['curl_errno']) !== 0) {
+            $detail .= ' cURL#' . intval($meta['curl_errno']) . '=' . strval($meta['curl_error']);
+        } elseif (strval($meta['json_error']) !== '') {
+            $detail .= ' json=' . strval($meta['json_error']);
+        }
+
+        if (strval($meta['body_snippet']) !== '') {
+            $detail .= ' body=' . strval($meta['body_snippet']);
+        }
+        if (strval($meta['request_id']) !== '') {
+            $detail .= ' reqid=' . strval($meta['request_id']);
+        }
+        if (strval($meta['region']) !== '') {
+            $detail .= ' region=' . strval($meta['region']);
+        }
+
+        return [
+            'status' => false,
+            'msg' => $detail,
+            'data' => [],
+            'error_class' => $errorClass,
+            'error_meta' => $meta,
+            'upstream_msg' => $msg,
+        ];
+    }
+
+    protected function buildTiktokBaseResponse(string $url): array
+    {
+        return [
+            'status' => true,
+            'msg' => '',
+            'data' => [
+                'like' => 0,
+                'share' => 0,
+                'comment' => 0,
+                'collect' => 0,
+                'view' => 0,
+                'created_at' => '',
+                'content_id' => $this->extract_tiktok_content_id($url),
+                'media_type' => $this->detect_tiktok_media_type_from_url($url),
+                'video_link' => '',
+                'cover' => '',
+                'images' => [],
+            ],
+        ];
+    }
+
+    protected function executeRapidApiGetWithRetry($url, array $headers, $isValidResponse, $maxRetry = 3, $delayMs = 300, $timeoutSec = 30)
+    {
+        $lastResponse = null;
+        for ($attempt = 1; $attempt <= $maxRetry; $attempt++) {
+            $lastResponse = $this->executeRapidApiGet($url, $headers, $timeoutSec);
+            if (is_callable($isValidResponse) && $isValidResponse($lastResponse)) {
+                return $lastResponse;
+            }
+
+            $errorClass = strval($lastResponse['error_class'] ?? '');
+            if (in_array($errorClass, ['config', 'permanent', 'infra', 'infra_dns', 'infra_connect', 'infra_tls'], true)) {
+                return $lastResponse;
+            }
+
+            if ($attempt < $maxRetry) {
+                usleep(max(0, intval($delayMs)) * 1000);
+            }
+        }
+
+        return is_array($lastResponse)
+            ? $lastResponse
+            : ['status' => false, 'msg' => 'RapidAPI tidak mengembalikan response', 'data' => [], 'error_class' => 'transient'];
+    }
+
+    function getDataFromFirstEndpoint($username)
+    {
+        $url = $this->buildRapidApiUrl('/index/Tiktok/getUserInfo', [
+            'unique_id' => $username,
+        ]);
+
+        $response = $this->executeRapidApiGetWithRetry($url, [], function ($resp) {
+            return intval($resp['code'] ?? -1) === 0 && !empty($resp['data']['user']['uniqueId']);
+        });
+
+        if ($this->isRapidApiFailureResponse($response)) {
+            $response['source'] = 'first_endpoint';
+            return $response;
+        }
+
+        if (empty($response['data']['user']['uniqueId'])) {
+            return [
+                "status" => false,
+                "msg" => "Username <b>" . htmlspecialchars($username, ENT_QUOTES, 'UTF-8') . "</b> tidak ditemukan",
+                "data" => [],
+                "source" => "first_endpoint"
+            ];
+        }
+
+        $user = $response['data']['user'] ?? [];
+        $stats = $response['data']['stats'] ?? [];
+        $img = $user['avatarLarger'] ?? ($user['avatarMedium'] ?? ($user['avatarThumb'] ?? ''));
+
+        return [
             "status" => true,
-            "msg" => "",
-            "data" => []
+            "msg" => "Data ditemukan",
+            "data" => [
+                "account_id"  => $user['secUid'] ?? '',
+                "username"    => $user['uniqueId'] ?? $username,
+                "img"         => $img,
+                "follower"    => intval($stats['followerCount'] ?? 0),
+                "media_count" => intval($stats['videoCount'] ?? 0),
+            ],
+            "source" => "first_endpoint"
         ];
-
-        $uri = explode("/", parse_url($url, PHP_URL_PATH));
-        $username = $uri[1] ?? null;
-
-        if (empty($url) || empty($username)) {
-            return [
-                "status" => false,
-                "msg" => "Pastikan URL sudah diisi!",
-                "data" => []
-            ];
-        }
-
-        if ($type == "Instagram") {
-            $response["status"] = false;
-            $response["msg"] = "Layanan belum tersedia";
-            $response["data"] = array();
-
-            // $curl = curl_init();
-
-            // curl_setopt_array($curl, [
-            //     CURLOPT_URL => "https://api.instagapi.com/userid/$username",
-            //     CURLOPT_RETURNTRANSFER => true,
-            //     CURLOPT_ENCODING => "",
-            //     CURLOPT_MAXREDIRS => 10,
-            //     CURLOPT_TIMEOUT => 30,
-            //     CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            //     CURLOPT_CUSTOMREQUEST => "GET",
-            //     CURLOPT_HTTPHEADER => [
-            //         "X-InstagAPI-Key: 0aaf6108af3c2962ff24720ffe09748b"
-            //     ],
-            // ]);
-
-            // $responseCurl = curl_exec($curl);
-            // curl_close($curl);
-
-            // $responseCurl = json_decode($responseCurl, true);
-
-            // if ($responseCurl['data']) {
-            //     $data['account_id'] = intval($responseCurl['data']);
-
-            //     $curl = curl_init();
-            //     curl_setopt_array($curl, [
-            //         CURLOPT_URL => "https://api.instagapi.com/usercontact/" . $responseCurl['data'],
-            //         CURLOPT_RETURNTRANSFER => true,
-            //         CURLOPT_ENCODING => "",
-            //         CURLOPT_MAXREDIRS => 10,
-            //         CURLOPT_TIMEOUT => 30,
-            //         CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            //         CURLOPT_CUSTOMREQUEST => "GET",
-            //         CURLOPT_HTTPHEADER => [
-            //             "X-InstagAPI-Key: 0aaf6108af3c2962ff24720ffe09748b"
-            //         ],
-            //     ]);
-            //     $userDetail = curl_exec($curl);
-            //     curl_close($curl);
-
-            //     $userDetail = json_decode($userDetail, true);
-
-            //     $data['img'] = strval($userDetail['data']['user']['hd_profile_pic_url_info']['url']);
-            //     $data['follower'] = intval($userDetail['data']['user']['follower_count']);
-            //     $data['media_count'] = intval($userDetail['data']['user']['media_count']);
-
-            //     return [
-            //         "status" => true,
-            //         "msg" => "Data ditemukan",
-            //         "data" => $data
-            //     ];
-            // } else {
-            //     return [
-            //         "status" => false,
-            //         "msg" => "Username <b>$username</b> tidak ditemukan",
-            //         "data" => []
-            //     ];
-            // }
-        } else if ($type == "Tiktok") {
-            $username = str_replace('@', '', $username);
-            $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-video-no-watermark10.p.rapidapi.com');
-            $headers = $this->getTikTokRapidApiHeaders($rapidapi_host);
-            $requestUrl = "https://{$rapidapi_host}/index/Tiktok/getUserInfo?unique_id=" . urlencode($username);
-
-            $resp = $this->curlRequestWithRetry($requestUrl, $headers, function ($resp) {
-                return intval($resp['code'] ?? -1) === 0 && !empty($resp['data']['user']['uniqueId']);
-            }, 3, 300, $timeout);
-
-            if (intval($resp['code'] ?? -1) === 0 && !empty($resp['data']['user']['uniqueId'])) {
-                $user = $resp['data']['user'];
-                $stats = $resp['data']['stats'] ?? [];
-                $avatar = strval($user['avatarLarger'] ?? '');
-                if ($avatar === '') {
-                    $avatar = strval($user['avatarMedium'] ?? ($user['avatarThumb'] ?? ''));
-                }
-
-                $data = [
-                    "username" => strval($user['uniqueId']),
-                    "account_id" => strval($user['secUid'] ?? ''),
-                    "follower" => intval($stats['followerCount'] ?? 0),
-                    "media_count" => intval($stats['videoCount'] ?? 0),
-                    "img" => $avatar,
-                    "source" => "first_endpoint",
-                    "full_name" => strval($user['nickname'] ?? $user['uniqueId'] ?? ''),
-                    "nickname" => strval($user['nickname'] ?? ''),
-                    "display_name" => strval($user['nickname'] ?? $user['uniqueId'] ?? ''),
-                ];
-
-                return [
-                    "status" => true,
-                    "msg" => "Data ditemukan",
-                    "data" => $data
-                ];
-            }
-
-            return [
-                "status" => false,
-                "msg" => "Username <b>$username</b> tidak ditemukan",
-                "data" => []
-            ];
-        } else {
-            return [
-                "status" => false,
-                "msg" => "Platform belum tersedia",
-                "data" => []
-            ];
-        }
     }
 
-
-    function get_post_list($type, $account_id, $timeout = 30)
+    function syncTiktokProfile($entityType, $entityId, $type, $url)
     {
-        $timeout = $this->normalize_timeout($timeout, 30);
-        $response = array();
-        $response["status"] = true;
-        $response["msg"] = "";
-        $response["data"] = array();
+        $CI =& get_instance();
 
-        if (empty($account_id)) {
-            $response["status"] = false;
-            $response["msg"] = "Pastikan account id sudah diisi!";
-            $response["data"] = array();
-        } else if ($type == "Instagram") {
-            $response["status"] = false;
-            $response["msg"] = "Layanan belum tersedia";
-            $response["data"] = array();
-            // $curl = curl_init();
-            // $end_cursor = '';
-            // curl_setopt_array($curl, [
-            //     CURLOPT_URL => "https://api.instagapi.com/userreels/$account_id/10/$end_cursor",
-            //     CURLOPT_RETURNTRANSFER => true,
-            //     CURLOPT_ENCODING => "",
-            //     CURLOPT_MAXREDIRS => 10,
-            //     CURLOPT_TIMEOUT => 30,
-            //     CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            //     CURLOPT_CUSTOMREQUEST => "GET",
-            //     CURLOPT_HTTPHEADER => [
-            //         "X-InstagAPI-Key: 0aaf6108af3c2962ff24720ffe09748b"
-            //     ],
-            // ]);
+        // Step 1: Get account ID (profile data)
+        $profileResult = $this->get_account_id($type, $url);
+        if (!$profileResult['status'] || empty($profileResult['data'])) {
+            return ['status' => false, 'msg' => $profileResult['msg'] ?: 'Gagal mengambil data profil TikTok'];
+        }
 
-            // $response = curl_exec($curl);
-            // $err = curl_error($curl);
+        $profileData = $profileResult['data'];
+        $table = ($entityType === 'influencer_dummy') ? 'influencer_dummy' : $entityType;
 
-            // curl_close($curl);
+        // Step 2: Update profile data
+        $profileUpdate = [
+            'account_id'  => $profileData['account_id'],
+            'img'         => $profileData['img'],
+            'follower'    => $profileData['follower'],
+            'media_count' => $profileData['media_count'],
+            'updated_at'  => date('Y-m-d H:i:s'),
+            'updated_by'  => '1', // system
+        ];
 
-            // $response = json_decode($response, true);
-            // if ($response['data']['items']) {
-            //     $response["status"] = true;
-            //     $response["msg"] = "Data ditemukan";
-            //     $arr = array();
-            //     foreach ($response['data']['items'] as $k => $v) {
-            //         $detail = $v['media'];
-            //         $arr[$k]["like"] = intval($detail['like_count']);
-            //         $arr[$k]["share"] = intval($detail['stats']['shareCount']);
-            //         $arr[$k]["comment"] = intval($detail['comment_count']);
-            //         $arr[$k]["collect"] = intval($detail['stats']['collectCount']);
-            //         $arr[$k]["view"] = intval($detail['play_count']);
-            //     }
-            //     $response["data"] = $arr;
-            // } else {
-            //     $response["status"] = false;
-            //     $response["msg"] = "Data reels account id :  <b>" . $account_id . "</b> tidak ditemukan";
-            //     $response["data"] = array();
-            // }
-        } else if ($type == "Tiktok") {
-            $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-video-no-watermark10.p.rapidapi.com');
-            $headers = $this->getTikTokRapidApiHeaders($rapidapi_host);
-            $normalized = ltrim(trim((string) $account_id), '@');
-            $uniqueId = '@' . $normalized;
-            $requestUrl = "https://{$rapidapi_host}/index/Tiktok/getUserVideos?unique_id=" . urlencode($uniqueId) . "&count=10&cursor=0";
+        if (!empty($profileData['username'])) {
+            $profileUpdate['full_name'] = $profileData['username'];
+        }
 
-            $resp = $this->curlRequestWithRetry($requestUrl, $headers, function ($resp) {
-                return intval($resp['code'] ?? -1) === 0 && !empty($resp['data']['videos']);
-            }, 3, 300, $timeout);
+        $CI->db->update($table, $profileUpdate, ['id' => $entityId]);
 
-            if (intval($resp['code'] ?? -1) === 0 && !empty($resp['data']['videos'])) {
-                $arr = [];
-                foreach (array_slice($resp['data']['videos'], 0, 10) as $k => $video) {
-                    $videoId = strval($video['video_id'] ?? ($video['aweme_id'] ?? ''));
-                    $awemeId = strval($video['aweme_id'] ?? ($video['video_id'] ?? ''));
-                    $author = $video['author'] ?? [];
-                    $authorUniqueId = strval($author['unique_id'] ?? $normalized);
-                    $arr[$k] = [
-                        "like" => intval($video['digg_count'] ?? 0),
-                        "share" => intval($video['share_count'] ?? 0),
-                        "comment" => intval($video['comment_count'] ?? 0),
-                        "collect" => intval($video['collect_count'] ?? 0),
-                        "view" => intval($video['play_count'] ?? 0),
-                        "video_id" => $videoId,
-                        "aweme_id" => $awemeId,
-                        "title" => strval($video['title'] ?? ''),
-                        "cover" => strval($video['cover'] ?? ''),
-                        "duration" => intval($video['duration'] ?? 0),
-                        "play" => strval($video['play'] ?? ''),
-                        "wmplay" => strval($video['wmplay'] ?? ''),
-                        "music" => strval($video['music'] ?? ''),
-                        "create_time" => intval($video['create_time'] ?? 0),
-                        "is_ad" => !empty($video['is_ad']),
-                        "author_id" => strval($author['id'] ?? ''),
-                        "author_unique_id" => $authorUniqueId,
-                        "author_nickname" => strval($author['nickname'] ?? ''),
-                        "author_avatar" => strval($author['avatar'] ?? ''),
-                        "url" => $authorUniqueId !== '' && $videoId !== '' ? "https://www.tiktok.com/@{$authorUniqueId}/video/{$videoId}" : '',
-                    ];
+        // Step 3: Get post list for engagement metrics
+        $postResult = $this->get_post_list($type, $profileData['username'] ?? '');
+        if ($postResult['status'] && !empty($postResult['data'])) {
+            $like = $comment = $collect = $share = $view = 0;
+            $i = 0;
+
+            foreach ($postResult['data'] as $post) {
+                $like    += $post['like'];
+                $comment += $post['comment'];
+                $collect += $post['collect'];
+                $share   += $post['share'];
+                $view    += $post['view'];
+                $i++;
+                if ($i >= 10) break;
+            }
+
+            $avg_view = $i ? $view / $i : 0;
+            $avg_interaksi = $i ? ($like + $comment + $collect + $share) / $i : 0;
+            $er = ($avg_view > 0) ? ($avg_interaksi / $avg_view * 100) : 0;
+
+            // Get ratecard for CPM calculation
+            $record = $CI->db->select('ratecard')->where('id', $entityId)->get($table)->row_array();
+            $ratecard = floatval($record['ratecard'] ?? 0);
+            $cpm_2 = ($ratecard > 0 && $avg_view > 0) ? ($ratecard / $avg_view * 1000) : 0;
+
+            $metricsUpdate = [
+                'sync_at'          => date('Y-m-d H:i:s'),
+                'updated_at'       => date('Y-m-d H:i:s'),
+                'updated_by'       => '1',
+                'frequency_2'      => $i,
+                'view_2'           => $view,
+                'like_2'           => $like,
+                'collect_2'        => $collect,
+                'share_2'          => $share,
+                'comment_2'        => $comment,
+                'avg_view_2'       => $avg_view,
+                'avg_interaksi_2'  => $avg_interaksi,
+                'er'               => $er,
+                'cpm_2'            => $cpm_2,
+            ];
+
+            $CI->db->update($table, $metricsUpdate, ['id' => $entityId]);
+
+            // Update influencer_logs if entity is influencer
+            if ($entityType === 'influencer') {
+                $today = date('Y-m-d');
+                $logs = $CI->db->select('id')
+                    ->where('id_influencer', $entityId)
+                    ->where('DATE(date)', $today)
+                    ->get('influencer_logs')
+                    ->row_array();
+
+                $logData = [
+                    'like'           => $like,
+                    'comment'        => $comment,
+                    'collect'        => $collect,
+                    'share'          => $share,
+                    'view'           => $view,
+                    'avg_view'       => $avg_view,
+                    'avg_interaksi'  => $avg_interaksi,
+                    'er'             => $er,
+                    'sync_at'        => date('Y-m-d H:i:s'),
+                ];
+
+                if ($logs) {
+                    $logData['updated_at'] = date('Y-m-d H:i:s');
+                    $CI->db->update('influencer_logs', $logData, ['id' => $logs['id']]);
+                } else {
+                    $logData['id_influencer'] = $entityId;
+                    $logData['date'] = $today;
+                    $logData['status'] = 'Aktif';
+                    $logData['created_at'] = date('Y-m-d H:i:s');
+                    $CI->db->insert('influencer_logs', $logData);
                 }
+            }
+        } else {
+            // No post data, still mark sync_at
+            $CI->db->update($table, [
+                'sync_at'    => date('Y-m-d H:i:s'),
+                'updated_at' => date('Y-m-d H:i:s'),
+                'updated_by' => '1',
+            ], ['id' => $entityId]);
+        }
 
+        return ['status' => true, 'msg' => 'Data TikTok berhasil disinkronkan'];
+    }
+
+    function get_account_id($type, $url, $entityType = null, $entityId = null, $priority = 5)
+    {
+        if ($type === 'Instagram') {
+            return $this->get_instagram_account($url);
+        }
+
+        $path = explode('/', trim((string) parse_url($url, PHP_URL_PATH), '/'));
+        $username = ltrim(strval($path[0] ?? ''), '@');
+        if (trim((string) $url) === '' || $username === '') {
+            return ['status' => false, 'msg' => 'Pastikan URL sudah diisi!', 'data' => [], 'error_class' => 'permanent'];
+        }
+
+        if ($type === 'Tiktok') {
+            return $this->getDataFromFirstEndpoint($username);
+        }
+
+        return ['status' => false, 'msg' => 'Platform belum tersedia', 'data' => [], 'error_class' => 'permanent'];
+    }
+
+    function get_post_list($type, $account_id)
+    {
+        if ($type === 'Instagram') {
+            return $this->get_instagram_post_list($account_id);
+        }
+
+        if ($type == "Tiktok") {
+            $username = trim((string) $account_id);
+            $username = ltrim($username, '@');
+            $uniqueId = '@' . $username;
+            $url = $this->buildRapidApiUrl('/index/Tiktok/getUserVideos', [
+                'unique_id' => $uniqueId,
+                'count' => 10,
+                'cursor' => 0,
+            ]);
+
+            $response = $this->executeRapidApiGetWithRetry($url, [], function ($resp) {
+                return intval($resp['code'] ?? -1) === 0 && !empty($resp['data']['videos']);
+            });
+
+            if ($this->isRapidApiFailureResponse($response)) {
+                return $response;
+            }
+
+            $videos = $response['data']['videos'] ?? [];
+            if (empty($videos)) {
                 return [
-                    "status" => true,
-                    "msg" => "Data ditemukan",
-                    "data" => $arr
+                    "status" => false,
+                    "msg" => "Data video tiktok account id :  <b>" . htmlspecialchars((string) $account_id, ENT_QUOTES, 'UTF-8') . "</b> tidak ditemukan",
+                    "data" => [],
+                    "error_class" => "empty"
+                ];
+            }
+
+            $posts = [];
+            $items = array_slice($videos, 0, 10);
+            foreach ($items as $k => $item) {
+                $author = $item['author'] ?? [];
+                $videoId = strval($item['video_id'] ?? ($item['aweme_id'] ?? ''));
+                $authorUniqueId = strval($author['unique_id'] ?? '');
+                $posts[$k] = [
+                    'like'              => intval($item['digg_count'] ?? 0),
+                    'share'             => intval($item['share_count'] ?? 0),
+                    'comment'           => intval($item['comment_count'] ?? 0),
+                    'collect'           => intval($item['collect_count'] ?? 0),
+                    'view'              => intval($item['play_count'] ?? 0),
+                    'video_id'          => $videoId,
+                    'aweme_id'          => strval($item['aweme_id'] ?? $videoId),
+                    'title'             => strval($item['title'] ?? ''),
+                    'cover'             => strval($item['cover'] ?? ''),
+                    'duration'          => intval($item['duration'] ?? 0),
+                    'play'              => strval($item['play'] ?? ''),
+                    'wmplay'            => strval($item['wmplay'] ?? ''),
+                    'music'             => strval($item['music'] ?? ''),
+                    'create_time'       => intval($item['create_time'] ?? 0),
+                    'is_ad'             => !empty($item['is_ad']),
+                    'author_id'         => strval($author['id'] ?? ''),
+                    'author_unique_id'  => $authorUniqueId,
+                    'author_nickname'   => strval($author['nickname'] ?? ''),
+                    'author_avatar'     => strval($author['avatar'] ?? ''),
+                    'url'               => ($authorUniqueId !== '' && $videoId !== '') ? "https://www.tiktok.com/@{$authorUniqueId}/video/{$videoId}" : '',
                 ];
             }
 
             return [
-                "status" => false,
-                "msg" => "Data video tiktok account id :  <b>" . $account_id . "</b> tidak ditemukan",
-                "data" => []
+                "status" => true,
+                "msg" => "Data ditemukan",
+                "data" => $posts
             ];
-
-        } else {
-            $response["status"] = false;
-            $response["msg"] = "Platform belum tersedia";
-            $response["data"] = array();
         }
-        return $response;
+
+        return [
+            "status" => false,
+            "msg"    => "Platform belum tersedia",
+            "data"   => [],
+            "error_class" => "permanent",
+        ];
     }
 
     function get_social_media($type, $url, $fetch_media_assets = true, $influencer_id = null)
     {
-        $response = [
-            "status" => true,
-            "msg" => "",
-            "data" => [
-                "like" => 0,
-                "share" => 0,
-                "comment" => 0,
-                "collect" => 0,
-                "view" => 0,
-                "created_at" => "",
-                "content_id" => "",
-                "media_type" => "",
-                "video_link" => "",
-                "cover" => "",
-                "images" => []
-            ]
-        ];
-        
-        if ($type == "Tiktok") {
-            if (empty($url)) {
-                return [
-                    "status" => false,
-                    "msg" => "URL tidak ditemukan",
-                    "data" => []
-                ];
-            }
-
-            $contentId = $this->extract_tiktok_content_id($url);
-            if ($contentId === '') {
-                return [
-                    "status" => false,
-                    "msg" => "Video ID tidak ditemukan dari URL",
-                    "data" => []
-                ];
-            }
-
-            $normalizedUrl = $this->normalize_tiktok_url($url);
-            $response['data']['content_id'] = $contentId;
-            $response['data']['media_type'] = $this->detect_tiktok_media_type_from_url($normalizedUrl);
-
-            $scraped = $this->fetch_tiktok_direct_detail($normalizedUrl);
-            if (!empty($scraped['stats']) && $this->has_tiktok_usable_stats($scraped['stats'])) {
-                $item = $scraped['item'];
-                $stats = $item['stats'] ?? [];
-                $response['data']['like'] = intval($stats['diggCount'] ?? 0);
-                $response['data']['share'] = intval($stats['shareCount'] ?? 0);
-                $response['data']['comment'] = intval($stats['commentCount'] ?? 0);
-                $response['data']['collect'] = intval($stats['collectCount'] ?? 0);
-                $response['data']['view'] = intval($stats['playCount'] ?? 0);
-                $response['data']['created_at'] = !empty($item['createTime']) ? date('Y-m-d', intval($item['createTime'])) : '';
-                $response['data']['content_id'] = strval($item['id'] ?? $response['data']['content_id']);
-                $response['data']['media_type'] = $this->detect_tiktok_media_type_from_item($item, $response['data']['media_type']);
-                $response['data']['cover'] = $this->extract_tiktok_cover_from_item($item);
-
-                if ($fetch_media_assets && $response['data']['media_type'] === 'photo') {
-                    $images = $this->extract_tiktok_photo_images_from_item($item);
-                    if (empty($images) && $response['data']['cover'] !== '') {
-                        $images = [$response['data']['cover']];
-                    }
-                    $response['data']['images'] = $images;
-                    if (!empty($images)) {
-                        $response['data']['video_link'] = json_encode($images);
-                    }
-                }
-
-                return $response;
-            }
-
-            $rapidapi_host = env('RAPIDAPI_HOST', 'tiktok-video-no-watermark10.p.rapidapi.com');
-            $headers = $this->getTikTokRapidApiHeaders($rapidapi_host);
-            $requestUrl = "https://{$rapidapi_host}/index/Tiktok/getVideoInfo?url=" . urlencode($normalizedUrl) . "&hd=0";
-            $fallback = $this->curlRequestWithRetry($requestUrl, $headers, function ($resp) {
-                return intval($resp['code'] ?? -1) === 0 && !empty($resp['data']['id']);
-            });
-
-            if (intval($fallback['code'] ?? -1) === 0 && !empty($fallback['data']['id'])) {
-                $data = $fallback['data'];
-                $response['data']['like'] = intval($data['digg_count'] ?? 0);
-                $response['data']['share'] = intval($data['share_count'] ?? 0);
-                $response['data']['comment'] = intval($data['comment_count'] ?? 0);
-                $response['data']['collect'] = intval($data['collect_count'] ?? 0);
-                $response['data']['view'] = intval($data['play_count'] ?? 0);
-                $response['data']['created_at'] = !empty($data['create_time']) ? date('Y-m-d', intval($data['create_time'])) : '';
-                $response['data']['content_id'] = strval($data['id'] ?? $response['data']['content_id']);
-                $response['data']['cover'] = strval($data['cover'] ?? ($data['origin_cover'] ?? ($data['ai_dynamic_cover'] ?? '')));
-                $response['data']['media_type'] = (!empty($data['images']) || $response['data']['media_type'] === 'photo') ? 'photo' : 'video';
-
-                if ($fetch_media_assets) {
-                    if ($response['data']['media_type'] === 'photo') {
-                        $images = array_values(array_filter(array_map('strval', $data['images'] ?? [])));
-                        if (empty($images) && $response['data']['cover'] !== '') {
-                            $images = [$response['data']['cover']];
-                        }
-                        $response['data']['images'] = $images;
-                        if (!empty($images)) {
-                            $response['data']['video_link'] = json_encode($images);
-                        }
-                    } elseif (!empty($data['play'])) {
-                        $response['data']['video_link'] = strval($data['play']);
-                    }
-                }
-
-                return $response;
-            }
-
-            return [
-                "status" => false,
-                "msg" => "Response tiktok {$contentId} tidak ditemukan",
-                "data" => []
-            ];
-            
-        } else if ($type == "Instagram") {
-            return [
-                "status" => false,
-                "msg" => "Layanan belum tersedia",
-                "data" => []
-            ];
-
-            // if ($url) {
-
-            //     $curl = curl_init();
-            //     $code = end(explode("reel/", $url));
-            //     if ($code == $url) {
-            //         $code = end(explode("p/", $url));
-            //     }
-            //     $code = explode('/', $code)[0];
-
-            //     curl_setopt_array($curl, array(
-            //         CURLOPT_URL => 'https://api.instagapi.com/postdetail/' . $code,
-            //         CURLOPT_RETURNTRANSFER => true,
-            //         CURLOPT_ENCODING => '',
-            //         CURLOPT_MAXREDIRS => 10,
-            //         CURLOPT_TIMEOUT => 0,
-            //         CURLOPT_FOLLOWLOCATION => true,
-            //         CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            //         CURLOPT_CUSTOMREQUEST => 'GET',
-            //         CURLOPT_HTTPHEADER => array(
-            //             'X-InstagAPI-Key: 0aaf6108af3c2962ff24720ffe09748b',
-            //             'Cookie: PHPSESSID=3f6obv20o5p0jbo2j4i94dml0k'
-            //         ),
-            //     ));
-
-            //     $response_2 = curl_exec($curl);
-
-            //     curl_close($curl);
-            //     $json = json_decode($response_2, true);
-            //     $jsonData = $json['data'];
-            //     if ($jsonData) {
-            //         $response["status"] = true;
-            //         $response["msg"] = "";
-            //         // $response["data"]["like"] = intval($jsonData['like_count']);
-            //         // $response["data"]["share"] = intval($jsonData['stats']['shareCount']);
-            //         // $response["data"]["comment"] = intval($jsonData['comment_count']);
-            //         // $response["data"]["collect"] = intval($jsonData['stats']['collectCount']);
-            //         // $response["data"]["view"] = intval($jsonData['play_count']);
-            //         curl_setopt_array($curl, array(
-            //             CURLOPT_URL => 'https://api.instagapi.com/postlikes/' . $code . '/1/',
-            //             CURLOPT_RETURNTRANSFER => true,
-            //             CURLOPT_ENCODING => '',
-            //             CURLOPT_MAXREDIRS => 10,
-            //             CURLOPT_TIMEOUT => 0,
-            //             CURLOPT_FOLLOWLOCATION => true,
-            //             CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
-            //             CURLOPT_CUSTOMREQUEST => 'GET',
-            //             CURLOPT_HTTPHEADER => array(
-            //                 'X-InstagAPI-Key: 0aaf6108af3c2962ff24720ffe09748b',
-            //                 'Cookie: PHPSESSID=3f6obv20o5p0jbo2j4i94dml0k'
-            //             ),
-            //         ));
-
-            //         $response_2 = curl_exec($curl);
-            //         $jsonData2 = json_decode($response_2, true);
-            //         $jsonData2 = $jsonData2['data'];
-
-            //         $response["data"]["like"] = intval($jsonData2['count']);
-            //         $response["data"]["share"] = intval($jsonData['shareCount']);
-            //         $response["data"]["comment"] = intval($jsonData['edge_media_to_parent_comment']['count']);
-            //         $response["data"]["collect"] = intval($jsonData['collectCount']);
-            //         $response["data"]["view"] = intval($jsonData['video_play_count']);
-            //         $response['data']['created_at'] = DATE("Y-m-d", $jsonData['taken_at']);
-            //     } else {
-            //         $response["status"] = false;
-            //         $response["msg"] = "Response instagram tidak ditemukan";
-            //         $response["data"] = array();
-            //     }
-            // } else {
-            //     $response["status"] = false;
-            //     $response["msg"] = "URL tidak ditemukan";
-            //     $response["data"] = array();
-            // }
-        } else {
-            $response["status"] = false;
-            $response["msg"] = "Platform belum tersedia";
-            $response["data"] = array();
+        if ($type === 'Instagram') {
+            return $this->get_instagram_social_media($url);
         }
-        return $response;
+        if ($type === 'Threads') {
+            return $this->get_threads_social_media($url, $influencer_id);
+        }
+        if ($type !== 'Tiktok') {
+            return ['status' => false, 'msg' => 'Platform belum tersedia', 'data' => [], 'error_class' => 'permanent'];
+        }
+        if (trim((string) $url) === '') {
+            return ['status' => false, 'msg' => 'URL tidak ditemukan', 'data' => [], 'error_class' => 'permanent'];
+        }
+
+        $contentId = $this->extract_tiktok_content_id($url);
+        if ($contentId === '') {
+            return [
+                'status' => false,
+                'msg' => 'Video ID tidak ditemukan dari URL: ' . $url,
+                'data' => [],
+                'error_class' => 'permanent',
+            ];
+        }
+
+        $timeout = max(1, intval(env('ENDORSE_REFRESH_HTTP_TIMEOUT', 30)));
+        $apiResp = $this->executeRapidApiGetWithRetry(
+            $this->buildTiktokDetailUrl($url, 0),
+            $this->getRapidApiHeaders(),
+            function ($response) {
+                return $this->isValidRapidApiTiktokDetailResponse($response);
+            },
+            3,
+            300,
+            $timeout
+        );
+
+        if (!$this->isValidRapidApiTiktokDetailResponse($apiResp)) {
+            return $this->buildTiktokRapidApiFailureResponse($contentId, $apiResp);
+        }
+
+        return $this->mapRapidApiTiktokDetailToResponse(
+            $this->buildTiktokBaseResponse($url),
+            $apiResp['data'] ?? [],
+            $fetch_media_assets
+        );
     }
 
-    function get_social_media_batch($items)
+    function get_social_media_batch(array $tasks, int $maxConcurrent = 10, float $deadlineSeconds = 45.0): array
     {
         $results = [];
-        foreach ((array) $items as $key => $item) {
-            $platform = is_array($item) ? ($item['platform'] ?? '') : '';
-            $url = is_array($item) ? ($item['link_upload'] ?? ($item['url'] ?? '')) : '';
-            $fetchMediaAssets = is_array($item) ? (($item['fetch_media_assets'] ?? true) ? true : false) : true;
-            $influencerId = is_array($item) ? ($item['influencer_id'] ?? null) : null;
-            $results[$key] = $this->get_social_media($platform, $url, $fetchMediaAssets, $influencerId);
+        $maxConcurrent = max(1, min(20, $maxConcurrent));
+        $startedAt = microtime(true);
+        $overBudget = function () use ($startedAt, $deadlineSeconds) {
+            return $deadlineSeconds > 0 && (microtime(true) - $startedAt) >= $deadlineSeconds;
+        };
+
+        $effectiveConcurrency = $maxConcurrent;
+        $brownoutFloor = min($maxConcurrent, 4);
+        $baseInlineRetryLimit = 2;
+        $batchOptions = [
+            'inline_retry_limit' => $baseInlineRetryLimit,
+            'inline_retry_delay_ms' => 500,
+            'min_retry_budget_seconds' => 15.0,
+        ];
+
+        $taskCount = count($tasks);
+        for ($offset = 0; $offset < $taskCount;) {
+            $firstTask = $tasks[$offset] ?? [];
+            $chunkSize = !empty($firstTask['rescue_lane']) ? 1 : $effectiveConcurrency;
+            $chunk = array_slice($tasks, $offset, $chunkSize, true);
+            $offset += $chunkSize;
+
+            if ($overBudget()) {
+                foreach ($chunk as $idx => $task) {
+                    $results[$idx] = $this->deferredBatchResult();
+                }
+                continue;
+            }
+
+            $batchOptions['remaining_budget_seconds'] = $deadlineSeconds > 0
+                ? max(0, $deadlineSeconds - (microtime(true) - $startedAt))
+                : 0.0;
+            $batch = $this->fetchRapidApiTiktokBatch($chunk, $batchOptions);
+            foreach ($chunk as $idx => $task) {
+                $results[$idx] = $batch[$idx] ?? ['status' => false, 'msg' => 'No response', 'data' => [], 'error_class' => 'transient'];
+            }
+
+            if (!empty($batch['_meta']['brownout'])) {
+                $effectiveConcurrency = max($brownoutFloor, intdiv($effectiveConcurrency, 2));
+                $batchOptions['inline_retry_limit'] = 0;
+            } elseif ($effectiveConcurrency < $maxConcurrent) {
+                $effectiveConcurrency = min($maxConcurrent, $effectiveConcurrency + 2);
+                $batchOptions['inline_retry_limit'] = $baseInlineRetryLimit;
+            }
         }
+
+        ksort($results);
         return $results;
     }
 
-    function extract_tiktok_content_id($url)
+    private function deferredBatchResult(): array
     {
-        $patterns = [
-            '#/video/(\d+)#',
-            '#/photo/(\d+)#',
-            '#(\d{10,25})#',
+        return [
+            'status'   => false,
+            'msg'      => 'Deferred: batch wall-clock budget reached',
+            'data'     => [],
+            'deferred' => true,
         ];
-        foreach ($patterns as $pattern) {
-            if (preg_match($pattern, (string) $url, $matches)) {
-                return strval($matches[1]);
+    }
+
+    protected function fetchRapidApiTiktokBatch(array $tasks, array $options = []): array
+    {
+        $configError = $this->rapidApiConfigError();
+        $headers = $this->getRapidApiHeaders();
+        $multiHandle = curl_multi_init();
+        // Let concurrent calls in this chunk share HTTP/2 connections (many streams over
+        // few sockets) rather than opening a fresh TCP+TLS per request. Guarded so the CI
+        // image / older libcurl without these constants degrades to plain parallel 1.1.
+        if (defined('CURLMOPT_PIPELINING') && defined('CURLPIPE_MULTIPLEX')) {
+            curl_multi_setopt($multiHandle, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX);
+        }
+        if (defined('CURLMOPT_MAX_HOST_CONNECTIONS')) {
+            curl_multi_setopt($multiHandle, CURLMOPT_MAX_HOST_CONNECTIONS, max(1, count($tasks)));
+        }
+        $handles = [];
+        $results = [];
+        $multiInfo = [];
+        $shareHandle = null;
+        $inlineRetryLimit = max(0, intval($options['inline_retry_limit'] ?? 0));
+        $inlineRetryDelayMs = max(0, intval($options['inline_retry_delay_ms'] ?? 0));
+        $remainingBudgetSeconds = doubleval($options['remaining_budget_seconds'] ?? 0.0);
+        $minRetryBudgetSeconds = doubleval($options['min_retry_budget_seconds'] ?? 0.0);
+
+        if ($configError !== null) {
+            foreach ($tasks as $idx => $task) {
+                $platform = $task['platform'] ?? '';
+                $url = trim((string) ($task['url'] ?? ''));
+                if ($platform !== 'Tiktok' || $url === '') {
+                    $results[$idx] = $this->get_social_media($platform, $url, true, $task['influencer_id'] ?? null);
+                    continue;
+                }
+                $results[$idx] = $this->buildTiktokRapidApiFailureResponse($this->extract_tiktok_content_id($url), $configError);
+            }
+            return $results;
+        }
+
+        if (function_exists('curl_share_init')) {
+            $shareHandle = curl_share_init();
+            if (defined('CURL_LOCK_DATA_DNS')) {
+                curl_share_setopt($shareHandle, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+            }
+            if (defined('CURL_LOCK_DATA_SSL_SESSION')) {
+                curl_share_setopt($shareHandle, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
             }
         }
-        return '';
+
+        foreach ($tasks as $idx => $task) {
+            $platform = $task['platform'] ?? '';
+            $url = trim((string) ($task['url'] ?? ''));
+
+            // Non-TikTok platforms use their direct adapters while TikTok requests
+            // share the concurrent RapidAPI transport below.
+            if ($platform !== 'Tiktok' || $url === '') {
+                $results[$idx] = $this->get_social_media($platform, $url, true, $task['influencer_id'] ?? null);
+                continue;
+            }
+
+            $content_id = $this->extract_tiktok_content_id($url);
+            if (empty($content_id)) {
+                $results[$idx] = [
+                    'status' => false,
+                    'msg' => 'Video ID tidak ditemukan dari URL: ' . $url,
+                    'data' => [],
+                ];
+                continue;
+            }
+
+            $detailUrl = $this->buildTiktokDetailUrl($url, intval($task['hd'] ?? 0));
+            $curl = curl_init();
+            $responseHeaders = [];
+            $timeoutSec = max(1, intval($task['timeout_sec'] ?? 12));
+            $curlOptions = [
+                CURLOPT_URL => $detailUrl,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_ENCODING => '',
+                CURLOPT_MAXREDIRS => 10,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT => $timeoutSec,
+                // RapidAPI serves HTTP/2 — let a whole fan-out chunk multiplex over one
+                // connection (see CURLMOPT_PIPELINING on the multi handle) instead of one
+                // TCP+TLS handshake per concurrent call. Falls back to 1.1 automatically
+                // if libcurl was built without h2.
+                CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_2TLS,
+                CURLOPT_CUSTOMREQUEST => 'GET',
+                CURLOPT_HTTPHEADER => $headers,
+                CURLOPT_HEADERFUNCTION => $this->buildRapidApiHeaderCollector($responseHeaders),
+            ];
+            if ($shareHandle !== null && defined('CURLOPT_SHARE')) {
+                $curlOptions[CURLOPT_SHARE] = $shareHandle;
+            }
+            curl_setopt_array($curl, $curlOptions);
+            curl_multi_add_handle($multiHandle, $curl);
+            $handles[$idx] = [
+                'curl' => $curl,
+                'url' => $url,
+                'content_id' => $content_id,
+                'timeout_sec' => $timeoutSec,
+                'hd' => intval($task['hd'] ?? 0),
+                'rescue_lane' => !empty($task['rescue_lane']),
+                'headers' => &$responseHeaders,
+            ];
+        }
+
+        if (!empty($handles)) {
+            do {
+                $status = curl_multi_exec($multiHandle, $active);
+                if ($active) {
+                    curl_multi_select($multiHandle, 1.0);
+                }
+            } while ($active && $status === CURLM_OK);
+
+            while (($info = curl_multi_info_read($multiHandle)) !== false) {
+                $multiInfo[spl_object_id($info['handle'])] = $info;
+            }
+
+            foreach ($handles as $idx => $h) {
+                $curl = $h['curl'];
+                $body = curl_multi_getcontent($curl);
+                $err  = curl_error($curl);
+                $errno = intval(curl_errno($curl));
+                $info = $multiInfo[spl_object_id($curl)] ?? null;
+                $multiResult = intval($info['result'] ?? 0);
+                if ($errno === 0 && $multiResult !== 0) {
+                    $errno = $multiResult;
+                }
+                if ($err === '' && $errno !== 0 && function_exists('curl_strerror')) {
+                    $err = curl_strerror($errno);
+                }
+                $httpCode = intval(curl_getinfo($curl, CURLINFO_HTTP_CODE));
+                $totalTime = doubleval(curl_getinfo($curl, CURLINFO_TOTAL_TIME));
+                $nameLookup = doubleval(curl_getinfo($curl, CURLINFO_NAMELOOKUP_TIME));
+                $connectTime = doubleval(curl_getinfo($curl, CURLINFO_CONNECT_TIME));
+                $appConnect = doubleval(curl_getinfo($curl, CURLINFO_APPCONNECT_TIME));
+                $startTransfer = doubleval(curl_getinfo($curl, CURLINFO_STARTTRANSFER_TIME));
+                curl_multi_remove_handle($multiHandle, $curl);
+                curl_close($curl);
+
+                $base = $this->buildTiktokBaseResponse($h['url']);
+                $apiResp = $this->finalizeRapidApiJsonResponse((string) $body, [
+                    'http_code' => $httpCode,
+                    'curl_errno' => $errno,
+                    'curl_error' => $err,
+                    'total_time' => $totalTime,
+                    'time_namelookup' => $nameLookup,
+                    'time_connect' => $connectTime,
+                    'time_appconnect' => $appConnect,
+                    'time_starttransfer' => $startTransfer,
+                    'multi_result' => $multiResult,
+                ] + $this->captureRapidApiHeaderMeta($h['headers'] ?? []));
+                if ($this->isValidRapidApiTiktokDetailResponse($apiResp)) {
+                    $results[$idx] = $this->mapRapidApiTiktokDetailToResponse($base, $apiResp['data'], true);
+                } else {
+                    $failure = $this->buildTiktokRapidApiFailureResponse($h['content_id'], $apiResp);
+                    $canInlineRetry = $inlineRetryLimit > 0
+                        && !$h['rescue_lane']
+                        && $remainingBudgetSeconds >= $minRetryBudgetSeconds
+                        && strval($failure['error_class'] ?? '') === 'infra_stall';
+
+                    if ($canInlineRetry) {
+                        $inlineRetryLimit--;
+                        if ($inlineRetryDelayMs > 0) {
+                            usleep($inlineRetryDelayMs * 1000);
+                        }
+
+                        $retryResp = $this->executeRapidApiGet(
+                            $this->buildTiktokDetailUrl($h['url'], $h['hd']),
+                            $headers,
+                            $h['timeout_sec']
+                        );
+
+                        if ($this->isValidRapidApiTiktokDetailResponse($retryResp)) {
+                            $results[$idx] = $this->mapRapidApiTiktokDetailToResponse($base, $retryResp['data'], true);
+                        } else {
+                            $results[$idx] = $this->buildTiktokRapidApiFailureResponse($h['content_id'], $retryResp);
+                        }
+                    } else {
+                        $results[$idx] = $failure;
+                    }
+                }
+            }
+        }
+
+        curl_multi_close($multiHandle);
+        if ($shareHandle !== null) {
+            curl_share_close($shareHandle);
+        }
+
+        $completedTikTok = 0;
+        $stallFailures = 0;
+        foreach ($results as $result) {
+            if (!is_array($result) || array_key_exists('deferred', $result)) {
+                continue;
+            }
+            $completedTikTok++;
+            if (strval($result['error_class'] ?? '') === 'infra_stall') {
+                $stallFailures++;
+            }
+        }
+        $results['_meta'] = [
+            'brownout' => $completedTikTok >= 3
+                && $stallFailures >= 3
+                && ($stallFailures / max(1, $completedTikTok)) >= 0.5,
+        ];
+
+        return $results;
     }
 
-    function detect_tiktok_media_type_from_url($url)
+    public function extract_tiktok_content_id($url)
     {
-        if (strpos((string) $url, '/photo/') !== false) {
-            return 'photo';
-        }
-        if (strpos((string) $url, '/video/') !== false) {
-            return 'video';
-        }
-        return '';
-    }
-
-    function normalize_tiktok_url($url)
-    {
-        $url = trim((string) $url);
-        if ($url === '') {
+        if (empty($url)) {
             return '';
         }
-        if (strpos($url, 'vt.tiktok.com') !== false || strpos($url, 'vm.tiktok.com') !== false) {
-            $resolved = $this->resolve_redirect_url($url);
-            if (!empty($resolved)) {
-                return $resolved;
-            }
+
+        if (preg_match('/\/video\/(\d+)/', $url, $matches)) {
+            return strval($matches[1]);
         }
-        return $url;
+
+        if (preg_match('/\/photo\/(\d+)/', $url, $matches)) {
+            return strval($matches[1]);
+        }
+
+        if (preg_match('/(\d{10,25})/', $url, $matches)) {
+            return strval($matches[1]);
+        }
+
+        return '';
     }
 
-    function resolve_redirect_url($url)
+    public function detect_tiktok_media_type_from_url($url)
     {
-        $headers = $this->curlRequest($url, [], 20, false, [
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_HEADER => true,
-            CURLOPT_NOBODY => true,
-            CURLOPT_USERAGENT => 'Mozilla/5.0',
-        ]);
-
-        if (!is_string($headers) || $headers === '') {
-            return $url;
-        }
-
-        if (preg_match_all('/^Location:\s*(.+)$/mi', $headers, $matches) && !empty($matches[1])) {
-            return trim(end($matches[1]));
-        }
-
-        return $url;
-    }
-
-    function fetch_tiktok_direct_detail($url)
-    {
-        $html = $this->curlRequest($url, [
-            'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7; rv:128.0) Gecko/20100101 Firefox/128.0',
-            'Cookie: tt_webid_v2=1; ttwid=1',
-        ], 30, false, [
-            CURLOPT_FOLLOWLOCATION => true,
-        ]);
-
-        if (!is_string($html) || $html === '') {
-            return [];
-        }
-
-        if (!preg_match('#<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">(.*?)</script>#s', $html, $matches)) {
-            return [];
-        }
-
-        $json = json_decode(html_entity_decode($matches[1], ENT_QUOTES | ENT_HTML5), true);
-        $item = $json['__DEFAULT_SCOPE__']['webapp.video-detail']['itemInfo']['itemStruct'] ?? [];
-        return [
-            'item' => $item,
-            'stats' => $item['stats'] ?? [],
-        ];
-    }
-
-    function has_tiktok_usable_stats($stats)
-    {
-        return intval($stats['diggCount'] ?? 0) > 0
-            || intval($stats['shareCount'] ?? 0) > 0
-            || intval($stats['commentCount'] ?? 0) > 0
-            || intval($stats['collectCount'] ?? 0) > 0
-            || intval($stats['playCount'] ?? 0) > 0;
-    }
-
-    function detect_tiktok_media_type_from_item($item, $fallback = '')
-    {
-        if (!empty($item['imagePost']['images']) || !empty($item['imagePost']['cover'])) {
+        if (stripos((string) $url, '/photo/') !== false) {
             return 'photo';
         }
-        if (!empty($item['video']) || $fallback === 'video') {
+        if (stripos((string) $url, '/video/') !== false) {
             return 'video';
-        }
-        return $fallback;
-    }
-
-    function extract_tiktok_cover_from_item($item)
-    {
-        if (!empty($item['video']['cover'])) {
-            return strval($item['video']['cover']);
-        }
-        if (!empty($item['imagePost']['cover']['imageURL']['urlList'][0])) {
-            return strval($item['imagePost']['cover']['imageURL']['urlList'][0]);
-        }
-        if (!empty($item['video']['originCover'])) {
-            return strval($item['video']['originCover']);
         }
         return '';
     }
 
-    function extract_tiktok_photo_images_from_item($item)
+    public function extract_tiktok_cover_from_item($item)
     {
-        $images = [];
-        foreach (($item['imagePost']['images'] ?? []) as $image) {
-            $url = strval($image['imageURL']['urlList'][0] ?? '');
-            if ($url !== '') {
-                $images[] = $url;
-            }
-        }
-        return $images;
+        return strval(
+            $item['video']['cover']
+                ?? ($item['imagePost']['cover']['imageURL']['urlList'][0]
+                ?? ($item['video']['originCover'] ?? ''))
+        );
     }
 
-    function get_tiktok_photo_images($content_id, $url = null)
+    protected function mapRapidApiTiktokDetailToResponse(array $response, array $item, bool $fetch_media_assets): array
+    {
+        $response['data']['like'] = intval($item['digg_count'] ?? 0);
+        $response['data']['share'] = intval($item['share_count'] ?? 0);
+        $response['data']['comment'] = intval($item['comment_count'] ?? 0);
+        $response['data']['collect'] = intval($item['collect_count'] ?? 0);
+        $response['data']['view'] = intval($item['play_count'] ?? 0);
+        $response['data']['content_id'] = strval($item['id'] ?? $response['data']['content_id']);
+        $response['data']['cover'] = strval($item['cover'] ?? ($item['origin_cover'] ?? ($item['ai_dynamic_cover'] ?? '')));
+        if (!empty($item['create_time'])) {
+            $response['data']['created_at'] = date('Y-m-d', intval($item['create_time']));
+        }
+
+        if (!empty($item['images']) || $response['data']['media_type'] === 'photo') {
+            $response['data']['media_type'] = 'photo';
+        } else {
+            $response['data']['media_type'] = 'video';
+        }
+
+        if ($fetch_media_assets) {
+            if ($response['data']['media_type'] === 'photo') {
+                $images = [];
+                foreach (($item['images'] ?? []) as $image) {
+                    if (is_string($image) && trim($image) !== '') {
+                        $images[] = trim($image);
+                    }
+                }
+                $response['data']['images'] = $images;
+                if (!empty($images)) {
+                    $response['data']['video_link'] = json_encode($images);
+                } elseif ($response['data']['cover'] !== '') {
+                    $response['data']['video_link'] = json_encode([$response['data']['cover']]);
+                }
+            } elseif (!empty($item['play'])) {
+                $response['data']['video_link'] = strval($item['play']);
+            }
+        }
+
+        return $response;
+    }
+
+    protected function hasEndorseTiktokColumns($CI)
+    {
+        return $CI->db->field_exists('tiktok_content_link', 'endorse');
+    }
+
+    public function get_tiktok_photo_images($content_id, $url = null)
     {
         $CI =& get_instance();
-        $CI->load->database();
-        if (empty($content_id) && empty($url)) {
-            return [
-                'status' => false,
-                'msg' => 'Content ID atau URL harus diisi.',
-                'data' => [],
-            ];
+        if (!$this->hasEndorseTiktokColumns($CI)) {
+            return ['status' => false, 'msg' => 'Kolom tiktok_content_link belum tersedia', 'data' => []];
+        }
+
+        $content_id = trim((string) $content_id);
+        $url = trim((string) $url);
+        if ($content_id === '' && $url === '') {
+            return ['status' => false, 'msg' => 'Content ID atau URL wajib diisi', 'data' => []];
         }
 
         $where = [];
-        if (!empty($content_id)) {
-            $safeContentId = $CI->db->escape($content_id);
-            $where[] = "tiktok_content_id = {$safeContentId}";
+        if ($content_id !== '') {
+            $where[] = "tiktok_content_id = " . $CI->db->escape($content_id);
         }
-        if (!empty($url)) {
-            $safeUrl = $CI->db->escape($url);
-            $where[] = "link_upload = {$safeUrl}";
+        if ($url !== '') {
+            $where[] = "link_upload = " . $CI->db->escape($url);
         }
 
-        $sql = "SELECT tiktok_content_link, tiktok_cover
+        $rows = $CI->mymodel->selectWithQuery("
+            SELECT tiktok_media_type, tiktok_cover, tiktok_content_link, link_upload
             FROM endorse
             WHERE (" . implode(' OR ', $where) . ")
-              AND tiktok_media_type = 'photo'
-            ORDER BY id DESC
-            LIMIT 1";
-        $rows = $CI->db->query($sql)->result_array();
-        $row = $rows[0] ?? [];
-        if (empty($row)) {
-            return [
-                'status' => false,
-                'msg' => 'Data TikTok photo tidak ditemukan.',
-                'data' => [],
-            ];
+            ORDER BY (tiktok_media_type = 'photo') DESC, updated_at DESC, id DESC
+            LIMIT 1
+        ");
+
+        if (empty($rows)) {
+            return ['status' => false, 'msg' => 'Data TikTok photo tidak ditemukan', 'data' => []];
         }
 
-        $images = json_decode($row['tiktok_content_link'] ?? '', true);
-        $images = is_array($images) ? array_values(array_filter(array_map('strval', $images))) : [];
+        $row = $rows[0];
+        $decoded = json_decode((string) ($row['tiktok_content_link'] ?? ''), true);
+        $images = [];
+        if (is_array($decoded)) {
+            foreach ($decoded as $image) {
+                if (is_string($image) && trim($image) !== '') {
+                    $images[] = trim($image);
+                }
+            }
+        }
         if (empty($images) && !empty($row['tiktok_cover'])) {
-            $images = [strval($row['tiktok_cover'])];
+            $images[] = $row['tiktok_cover'];
         }
         if (empty($images)) {
-            return [
-                'status' => false,
-                'msg' => 'Data image TikTok tidak ditemukan.',
-                'data' => [],
-            ];
+            return ['status' => false, 'msg' => 'Data gambar TikTok tidak ditemukan', 'data' => []];
         }
 
-        return [
-            'status' => true,
-            'msg' => '',
-            'data' => $images,
-        ];
+        return ['status' => true, 'msg' => '', 'data' => $images];
     }
 
-    function get_tiktok_video_play($url)
+    public function get_tiktok_video_play($url)
     {
         $CI =& get_instance();
-        $CI->load->database();
-        if (empty($url)) {
-            return [
-                'status' => false,
-                'msg' => 'URL harus diisi.',
-                'data' => [],
-            ];
+        if (!$this->hasEndorseTiktokColumns($CI)) {
+            return ['status' => false, 'msg' => 'Kolom tiktok_content_link belum tersedia', 'data' => []];
         }
 
-        $safeUrl = $CI->db->escape($url);
-        $rows = $CI->db->query("SELECT tiktok_media_type, tiktok_content_link
+        $url = trim((string) $url);
+        if ($url === '') {
+            return ['status' => false, 'msg' => 'URL tidak ditemukan', 'data' => []];
+        }
+
+        $rows = $CI->mymodel->selectWithQuery("
+            SELECT tiktok_media_type, tiktok_content_link
             FROM endorse
-            WHERE link_upload = {$safeUrl}
-            ORDER BY id DESC
-            LIMIT 1")->result_array();
-        $row = $rows[0] ?? [];
-        if (empty($row) || strval($row['tiktok_media_type'] ?? '') === 'photo' || empty($row['tiktok_content_link'])) {
-            return [
-                'status' => false,
-                'msg' => 'Data video TikTok tidak ditemukan.',
-                'data' => [],
-            ];
+            WHERE link_upload = " . $CI->db->escape($url) . "
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+        ");
+
+        if (empty($rows)) {
+            return ['status' => false, 'msg' => 'Data TikTok video tidak ditemukan', 'data' => []];
         }
 
-        return [
-            'status' => true,
-            'msg' => '',
-            'data' => strval($row['tiktok_content_link']),
-        ];
+        $row = $rows[0];
+        if (($row['tiktok_media_type'] ?? '') === 'photo') {
+            return ['status' => false, 'msg' => 'Konten TikTok ini bertipe photo', 'data' => []];
+        }
+
+        $play = trim((string) ($row['tiktok_content_link'] ?? ''));
+        if ($play === '') {
+            return ['status' => false, 'msg' => 'Play URL TikTok tidak ditemukan', 'data' => []];
+        }
+
+        return ['status' => true, 'msg' => '', 'data' => $play];
     }
 
     function title()
@@ -1564,4 +2084,216 @@ class Template
 
         return true;
     }
+
+    protected function bhskin_social_json($url, array $headers = [])
+    {
+        $curl = curl_init();
+        curl_setopt_array($curl, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_HTTPHEADER => $headers,
+        ]);
+        $raw = curl_exec($curl);
+        $errno = intval(curl_errno($curl));
+        $error = strval(curl_error($curl));
+        $httpCode = intval(curl_getinfo($curl, CURLINFO_HTTP_CODE));
+        curl_close($curl);
+        $json = json_decode($raw, true);
+        if (!is_array($json)) {
+            $json = [];
+        }
+        $json['_transport'] = [
+            'curl_errno' => $errno,
+            'curl_error' => $error,
+            'http_code' => $httpCode,
+            'json_error' => ($raw !== false && $raw !== '' && empty($json)) ? json_last_error_msg() : '',
+        ];
+        return $json;
+    }
+
+    protected function social_api_error_class(array $payload, string $fallback = 'transient')
+    {
+        $transport = $payload['_transport'] ?? [];
+        $errno = intval($transport['curl_errno'] ?? 0);
+        $httpCode = intval($transport['http_code'] ?? 0);
+        if ($errno === 6) return 'infra_dns';
+        if ($errno === 7) return 'infra_connect';
+        if ($errno === 35) return 'infra_tls';
+        if ($errno === 28) return 'infra_stall';
+        if ($errno !== 0 || $httpCode === 0) return 'infra';
+
+        $error = $payload['error'] ?? [];
+        $message = strtolower(strval($error['message'] ?? ($payload['message'] ?? '')));
+        $errorCode = intval($error['code'] ?? 0);
+        if ($httpCode === 401 || $httpCode === 403 || $errorCode === 190
+            || strpos($message, 'access token') !== false
+            || strpos($message, 'api key') !== false
+            || strpos($message, 'unauthorized') !== false
+            || strpos($message, 'forbidden') !== false) {
+            return 'config';
+        }
+        if ($httpCode === 429 || $httpCode >= 500) return 'transient';
+        if ($httpCode >= 400) return 'permanent';
+        return $fallback;
+    }
+
+    protected function social_api_failure(array $payload, string $message, string $fallback = 'transient')
+    {
+        return [
+            'status' => false,
+            'msg' => $message,
+            'data' => [],
+            'error_class' => $this->social_api_error_class($payload, $fallback),
+            'error_meta' => $payload['_transport'] ?? [],
+        ];
+    }
+
+    protected function bhskin_instagram_headers()
+    {
+        $host = env('INSTAGRAM_RAPIDAPI_HOST', 'instagram-looter2.p.rapidapi.com');
+        return [
+            'Content-Type: application/json',
+            'x-rapidapi-host: ' . $host,
+            'x-rapidapi-key: ' . env('INSTAGRAM_RAPIDAPI_KEY', ''),
+        ];
+    }
+
+    function get_instagram_account($url)
+    {
+        if (trim((string) env('INSTAGRAM_RAPIDAPI_KEY', '')) === '') {
+            return ['status' => false, 'msg' => 'Konfigurasi Instagram RapidAPI belum lengkap', 'data' => [], 'error_class' => 'config'];
+        }
+        $path = trim((string) parse_url($url, PHP_URL_PATH), '/');
+        $username = ltrim(explode('/', $path)[0] ?? '', '@');
+        if ($username === '') return ['status' => false, 'msg' => 'Pastikan URL Instagram sudah diisi!', 'data' => [], 'error_class' => 'permanent'];
+        $host = env('INSTAGRAM_RAPIDAPI_HOST', 'instagram-looter2.p.rapidapi.com');
+        $payload = $this->bhskin_social_json('https://' . $host . '/profile2?username=' . urlencode($username), $this->bhskin_instagram_headers());
+        $user = $payload['data']['user'] ?? ($payload['user'] ?? ($payload['data'] ?? []));
+        if (empty($user) || (!empty($payload['error']) && empty($user['id']))) {
+            return $this->social_api_failure($payload, $payload['message'] ?? 'Profil Instagram tidak ditemukan', 'permanent');
+        }
+        return ['status' => true, 'msg' => 'Data ditemukan', 'data' => [
+            'username' => strval($user['username'] ?? $username),
+            'account_id' => strval($user['id'] ?? $user['pk'] ?? ''),
+            'follower' => intval($user['follower_count'] ?? $user['followers'] ?? 0),
+            'media_count' => intval($user['media_count'] ?? $user['edge_owner_to_timeline_media']['count'] ?? 0),
+            'img' => strval($user['profile_pic_url_hd'] ?? $user['profile_pic_url'] ?? ''),
+            'source' => 'instagram_looter2',
+        ]];
+    }
+
+    function get_instagram_post_list($account_id)
+    {
+        if (trim((string) env('INSTAGRAM_RAPIDAPI_KEY', '')) === '') return ['status' => false, 'msg' => 'Konfigurasi Instagram RapidAPI belum lengkap', 'data' => [], 'error_class' => 'config'];
+        if (trim((string) $account_id) === '') return ['status' => false, 'msg' => 'Pastikan account id sudah diisi!', 'data' => [], 'error_class' => 'permanent'];
+        $host = env('INSTAGRAM_RAPIDAPI_HOST', 'instagram-looter2.p.rapidapi.com');
+        $payload = $this->bhskin_social_json('https://' . $host . '/user-feeds2?id=' . urlencode($account_id) . '&count=10', $this->bhskin_instagram_headers());
+        $items = $payload['data']['items'] ?? ($payload['items'] ?? ($payload['data'] ?? []));
+        if (empty($items) || !is_array($items)) return $this->social_api_failure($payload, $payload['message'] ?? 'Post Instagram tidak ditemukan', 'empty');
+        $out = [];
+        foreach (array_slice($items, 0, 10) as $item) {
+            $out[] = [
+                'like' => intval($item['like_count'] ?? $item['likes'] ?? 0),
+                'comment' => intval($item['comment_count'] ?? $item['comments'] ?? 0),
+                'share' => intval($item['share_count'] ?? 0),
+                'collect' => intval($item['save_count'] ?? 0),
+                'view' => intval($item['play_count'] ?? $item['view_count'] ?? $item['video_view_count'] ?? 0),
+            ];
+        }
+        return ['status' => true, 'msg' => 'Data ditemukan', 'data' => $out];
+    }
+
+    function get_instagram_social_media($url)
+    {
+        if (trim((string) env('INSTAGRAM_RAPIDAPI_KEY', '')) === '') return ['status' => false, 'msg' => 'Konfigurasi Instagram RapidAPI belum lengkap', 'data' => [], 'error_class' => 'config'];
+        if (trim((string) $url) === '') return ['status' => false, 'msg' => 'URL tidak ditemukan', 'data' => [], 'error_class' => 'permanent'];
+        $host = env('INSTAGRAM_RAPIDAPI_HOST', 'instagram-looter2.p.rapidapi.com');
+        $payload = $this->bhskin_social_json('https://' . $host . '/post?url=' . urlencode($url), $this->bhskin_instagram_headers());
+        $item = $payload['data']['item'] ?? ($payload['item'] ?? ($payload['data'] ?? []));
+        if (empty($item) || !is_array($item)) return $this->social_api_failure($payload, $payload['message'] ?? 'Post Instagram tidak ditemukan', 'permanent');
+        return ['status' => true, 'msg' => 'Data ditemukan', 'data' => [
+            'content_id' => strval($item['id'] ?? $item['pk'] ?? $item['shortcode'] ?? ''),
+            'like' => intval($item['like_count'] ?? $item['likes'] ?? 0),
+            'comment' => intval($item['comment_count'] ?? $item['comments'] ?? 0),
+            'share' => intval($item['share_count'] ?? 0),
+            'collect' => intval($item['save_count'] ?? 0),
+            'view' => intval($item['play_count'] ?? $item['view_count'] ?? $item['video_view_count'] ?? 0),
+            'created_at' => !empty($item['taken_at']) ? date('Y-m-d', intval($item['taken_at'])) : '',
+        ]];
+    }
+
+    protected function bhskin_threads_influencer($influencerId)
+    {
+        $CI =& get_instance();
+        $row = $CI->mymodel->selectDataOne('influencer', ['id' => intval($influencerId)]);
+        if (empty($row['threads_access_token'])) return [null, 'Threads belum terhubung untuk influencer ini', 'config'];
+        if (!empty($row['threads_token_expires_at']) && $row['threads_token_expires_at'] < date('Y-m-d H:i:s')) return [null, 'Token Threads sudah expired, silakan reconnect', 'config'];
+        return [$row, '', ''];
+    }
+
+    function get_threads_account($influencerId, $url = '')
+    {
+        [$row, $error, $errorClass] = $this->bhskin_threads_influencer($influencerId);
+        if (!$row) return ['status' => false, 'msg' => $error, 'data' => [], 'error_class' => $errorClass];
+        $token = $row['threads_access_token'];
+        $profile = $this->bhskin_social_json('https://graph.threads.net/v1.0/me?fields=id,username,name,threads_profile_picture_url&access_token=' . urlencode($token));
+        if (empty($profile['id'])) return $this->social_api_failure($profile, $profile['error']['message'] ?? 'Gagal mengambil profil Threads');
+        $insights = $this->bhskin_social_json('https://graph.threads.net/v1.0/me/threads_insights?metric=followers_count&access_token=' . urlencode($token));
+        $followers = 0;
+        foreach ($insights['data'] ?? [] as $metric) if (($metric['name'] ?? '') === 'followers_count') $followers = intval($metric['total_value']['value'] ?? ($metric['values'][0]['value'] ?? 0));
+        return ['status' => true, 'msg' => 'Data ditemukan', 'data' => [
+            'username' => $profile['username'] ?? '', 'account_id' => strval($profile['id']),
+            'follower' => $followers, 'media_count' => 0, 'img' => $profile['threads_profile_picture_url'] ?? '', 'source' => 'threads_graph_api',
+        ]];
+    }
+
+    function get_threads_post_list($influencerId)
+    {
+        [$row, $error, $errorClass] = $this->bhskin_threads_influencer($influencerId);
+        if (!$row) return ['status' => false, 'msg' => $error, 'data' => [], 'error_class' => $errorClass];
+        $token = $row['threads_access_token'];
+        $posts = $this->bhskin_social_json('https://graph.threads.net/v1.0/me/threads?fields=id,permalink,timestamp,text,media_type,media_url,thumbnail_url&limit=10&access_token=' . urlencode($token));
+        if (empty($posts['data'])) return $this->social_api_failure($posts, $posts['error']['message'] ?? 'Tidak ada thread di akun Threads ini', 'empty');
+        $out = [];
+        foreach (array_slice($posts['data'], 0, 10) as $post) {
+            $metrics = $this->bhskin_threads_metrics_by_id($post['id'] ?? '', $token);
+            $out[] = ['like' => $metrics['likes'] ?? 0, 'comment' => $metrics['replies'] ?? 0, 'share' => $metrics['reposts'] ?? 0, 'collect' => $metrics['quotes'] ?? 0, 'view' => $metrics['views'] ?? 0];
+        }
+        return ['status' => true, 'msg' => 'Data ditemukan', 'data' => $out];
+    }
+
+    protected function bhskin_threads_metrics_by_id($mediaId, $token)
+    {
+        if ($mediaId === '') return [];
+        $payload = $this->bhskin_social_json('https://graph.threads.net/v1.0/' . urlencode($mediaId) . '/insights?metric=views,likes,replies,reposts,quotes&access_token=' . urlencode($token));
+        $out = [];
+        foreach ($payload['data'] ?? [] as $metric) $out[$metric['name'] ?? ''] = intval($metric['values'][0]['value'] ?? ($metric['total_value']['value'] ?? 0));
+        return $out;
+    }
+
+    function get_threads_social_media($url, $influencerId)
+    {
+        [$row, $error, $errorClass] = $this->bhskin_threads_influencer($influencerId);
+        if (!$row) return ['status' => false, 'msg' => $error, 'data' => [], 'error_class' => $errorClass];
+        if (!preg_match('#threads\\.(?:com|net)/@[^/]+/post/([A-Za-z0-9_-]+)#', $url, $match)) return ['status' => false, 'msg' => 'Format URL Threads tidak valid: ' . $url, 'data' => [], 'error_class' => 'permanent'];
+        $token = $row['threads_access_token']; $after = ''; $mediaId = '';
+        for ($page = 0; $page < 5 && $mediaId === ''; $page++) {
+            $endpoint = 'https://graph.threads.net/v1.0/me/threads?fields=id,shortcode&limit=100&access_token=' . urlencode($token) . ($after !== '' ? '&after=' . urlencode($after) : '');
+            $payload = $this->bhskin_social_json($endpoint);
+            foreach ($payload['data'] ?? [] as $post) if (($post['shortcode'] ?? '') === $match[1]) { $mediaId = $post['id']; break; }
+            $after = $payload['paging']['cursors']['after'] ?? '';
+            if ($after === '') break;
+        }
+        if ($mediaId === '') return ['status' => false, 'msg' => 'Post Threads tidak ditemukan di akun ini', 'data' => [], 'error_class' => 'permanent'];
+        $metrics = $this->bhskin_threads_metrics_by_id($mediaId, $token);
+        if (empty($metrics)) return ['status' => false, 'msg' => 'Gagal mengambil insights dari Threads API', 'data' => [], 'error_class' => 'transient'];
+        $detail = $this->bhskin_social_json('https://graph.threads.net/v1.0/' . urlencode($mediaId) . '?fields=timestamp&access_token=' . urlencode($token));
+        return ['status' => true, 'msg' => 'Data ditemukan', 'data' => [
+            'content_id' => $mediaId, 'like' => intval($metrics['likes'] ?? 0), 'comment' => intval($metrics['replies'] ?? 0),
+            'share' => intval($metrics['reposts'] ?? 0), 'collect' => intval($metrics['quotes'] ?? 0), 'view' => intval($metrics['views'] ?? 0),
+            'created_at' => !empty($detail['timestamp']) ? date('Y-m-d', strtotime($detail['timestamp'])) : '',
+        ]];
+    }
+
 }

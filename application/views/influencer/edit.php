@@ -63,13 +63,16 @@
 			<label>Platform</label>
 			<select class="form-control" name="dt[type]">
 				<?php
-				$arr = ["Tiktok", "Instagram", "Twitter", "Youtube"];
+				$arr = ["Tiktok", "Instagram", "Threads", "Twitter", "Youtube"];
 				foreach ($arr as $v2) {
 					$selected = ($data['type'] == $v2) ? 'selected' : '';
 					echo "<option $selected value=\"$v2\">$v2</option>";
 				}
 				?>
 			</select>
+			<?php if (($data['type'] ?? '') === 'Threads'): ?>
+				<a class="btn btn-outline-secondary btn-sm mt-2" target="_blank" href="<?= base_url() ?>api_v2/threads_authorize?influencer_id=<?= intval($data['id']) ?>">Connect / reconnect Threads</a>
+			<?php endif; ?>
 		</div>
 		<div class="col-md-6 mb-3">
 			<label>URL</label>
