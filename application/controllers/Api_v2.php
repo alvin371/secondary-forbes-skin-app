@@ -40,6 +40,8 @@ class Api_v2 extends CI_Controller
         // Meta/Facebook API credentials
         $this->app_id_meta = env('META_APP_ID', '');
         $this->app_secret_meta = env('META_APP_SECRET', '');
+        $this->app_id_threads = env('THREADS_APP_ID', '');
+        $this->app_secret_threads = env('THREADS_APP_SECRET', '');
     }
 
     public function index()
@@ -52,214 +54,278 @@ class Api_v2 extends CI_Controller
         $html['msg'] = "BKA System REST API access has been successful!";
         echo json_encode($html, true);
     }
+    // Threads OAuth and lifecycle. App credentials are deployment-only environment values.
+    public function threads_authorize()
+    {
+        $influencerId = intval($_GET['influencer_id'] ?? 0);
+        if ($influencerId <= 0) {
+            echo 'influencer_id wajib diisi';
+            return;
+        }
+        if ($this->app_id_threads === '' || $this->app_secret_threads === '') {
+            echo 'Konfigurasi Threads belum lengkap.';
+            return;
+        }
+
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            @session_start();
+        }
+        $state = bin2hex(random_bytes(24));
+        if (!isset($_SESSION['threads_oauth_states']) || !is_array($_SESSION['threads_oauth_states'])) {
+            $_SESSION['threads_oauth_states'] = [];
+        }
+        $_SESSION['threads_oauth_states'][$state] = [
+            'influencer_id' => $influencerId,
+            'expires_at' => time() + 600,
+        ];
+
+        $redirectUri = base_url() . 'api_v2/threads_callback';
+        $url = 'https://threads.net/oauth/authorize?client_id=' . urlencode($this->app_id_threads)
+            . '&redirect_uri=' . urlencode($redirectUri)
+            . '&scope=threads_basic,threads_manage_insights&response_type=code&state=' . urlencode($state);
+        redirect($url);
+    }
+
+    public function threads_callback()
+    {
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            @session_start();
+        }
+        $code = strval($_GET['code'] ?? '');
+        $state = strval($_GET['state'] ?? '');
+        $stateData = $_SESSION['threads_oauth_states'][$state] ?? null;
+        unset($_SESSION['threads_oauth_states'][$state]);
+        if ($code === '' || !is_array($stateData) || intval($stateData['expires_at'] ?? 0) < time()) {
+            echo 'OAuth gagal: code atau state tidak valid atau sudah kedaluwarsa.';
+            return;
+        }
+        $influencerId = intval($stateData['influencer_id'] ?? 0);
+        if ($influencerId <= 0) {
+            echo 'OAuth gagal: influencer tidak valid.';
+            return;
+        }
+
+        $redirectUri = base_url() . 'api_v2/threads_callback';
+        $short = $this->threads_request('https://graph.threads.net/oauth/access_token', [
+            'client_id' => $this->app_id_threads, 'client_secret' => $this->app_secret_threads,
+            'grant_type' => 'authorization_code', 'redirect_uri' => $redirectUri, 'code' => $code,
+        ]);
+        if (empty($short['access_token'])) {
+            echo 'Gagal mendapatkan access token Threads.';
+            return;
+        }
+        $long = $this->threads_get('https://graph.threads.net/access_token?grant_type=th_exchange_token&client_secret=' . urlencode($this->app_secret_threads) . '&access_token=' . urlencode($short['access_token']));
+        $token = $long['access_token'] ?? $short['access_token'];
+        $expires = intval($long['expires_in'] ?? 5184000);
+        $this->db->update('influencer', [
+            'threads_user_id' => strval($short['user_id'] ?? ''),
+            'threads_access_token' => $token,
+            'threads_token_expires_at' => date('Y-m-d H:i:s', time() + $expires),
+        ], ['id' => $influencerId]);
+        redirect(base_url() . 'influencer?msg=threads_connected&influencer_id=' . $influencerId);
+    }
+
+    public function threads_refresh_token()
+    {
+        $rows = $this->mymodel->selectWithQuery("SELECT id, threads_access_token FROM influencer WHERE threads_access_token IS NOT NULL AND threads_access_token != '' AND threads_token_expires_at != '' AND threads_token_expires_at <= '" . date('Y-m-d H:i:s', strtotime('+7 days')) . "'") ?: [];
+        $results = [];
+        foreach ($rows as $row) {
+            $data = $this->threads_get('https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token&access_token=' . urlencode($row['threads_access_token']));
+            if (!empty($data['access_token'])) {
+                $this->db->update('influencer', ['threads_access_token' => $data['access_token'], 'threads_token_expires_at' => date('Y-m-d H:i:s', time() + intval($data['expires_in'] ?? 5184000))], ['id' => $row['id']]);
+                $results[] = ['id' => $row['id'], 'status' => 'refreshed'];
+            } else $results[] = ['id' => $row['id'], 'status' => 'failed'];
+        }
+        header('Content-Type: application/json; charset=utf-8'); echo json_encode(['status' => true, 'results' => $results]);
+    }
+
+    public function threads_deauthorize()
+    {
+        $data = $this->parse_threads_signed_request($_POST['signed_request'] ?? '');
+        if (empty($data['user_id'])) {
+            return $this->threads_lifecycle_error();
+        }
+        $this->db->update('influencer', ['threads_access_token' => '', 'threads_user_id' => '', 'threads_token_expires_at' => ''], ['threads_user_id' => $data['user_id']]);
+        echo json_encode(['url' => base_url(), 'confirmation_code' => uniqid('threads_')]);
+    }
+
+    public function threads_delete_data()
+    {
+        $data = $this->parse_threads_signed_request($_POST['signed_request'] ?? '');
+        if (empty($data['user_id'])) {
+            return $this->threads_lifecycle_error();
+        }
+        $this->db->update('influencer', ['threads_access_token' => '', 'threads_user_id' => '', 'threads_token_expires_at' => ''], ['threads_user_id' => $data['user_id']]);
+        $code = uniqid('del_');
+        echo json_encode(['url' => base_url() . 'api_v2/threads_delete_status?code=' . $code, 'confirmation_code' => $code]);
+    }
+
+    public function threads_delete_status() { echo json_encode(['status' => 'completed']); }
+
+    private function parse_threads_signed_request($signedRequest)
+    {
+        $parts = explode('.', $signedRequest, 2);
+        if (count($parts) !== 2 || $this->app_secret_threads === '') {
+            return [];
+        }
+
+        $signature = $this->base64_url_decode($parts[0]);
+        $payloadRaw = $this->base64_url_decode($parts[1]);
+        if ($signature === false || $payloadRaw === false) {
+            return [];
+        }
+        $expected = hash_hmac('sha256', $parts[1], $this->app_secret_threads, true);
+        if (!hash_equals($expected, $signature)) {
+            return [];
+        }
+
+        $payload = json_decode($payloadRaw, true);
+        if (!is_array($payload) || strtoupper(strval($payload['algorithm'] ?? 'HMAC-SHA256')) !== 'HMAC-SHA256') {
+            return [];
+        }
+        return $payload;
+    }
+
+    private function base64_url_decode($value)
+    {
+        $value = strtr(strval($value), '-_', '+/');
+        $padding = strlen($value) % 4;
+        if ($padding > 0) {
+            $value .= str_repeat('=', 4 - $padding);
+        }
+        return base64_decode($value, true);
+    }
+
+    private function threads_lifecycle_error()
+    {
+        http_response_code(400);
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['status' => false, 'msg' => 'signed_request tidak valid']);
+        return null;
+    }
+
+    private function threads_get($url)
+    {
+        $curl = curl_init(); curl_setopt_array($curl, [CURLOPT_URL => $url, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 30]);
+        $raw = curl_exec($curl); curl_close($curl); $data = json_decode($raw, true); return is_array($data) ? $data : [];
+    }
+
+    private function threads_request($url, array $fields)
+    {
+        $curl = curl_init(); curl_setopt_array($curl, [CURLOPT_URL => $url, CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true, CURLOPT_POSTFIELDS => http_build_query($fields), CURLOPT_TIMEOUT => 30]);
+        $raw = curl_exec($curl); curl_close($curl); $data = json_decode($raw, true); return is_array($data) ? $data : [];
+    }
+
+
+    private function worker_auth_guard()
+    {
+        $ip_allowlist = env('WORKER_IP_ALLOWLIST', '');
+        if ($ip_allowlist) {
+            $allowed = array_map('trim', explode(',', $ip_allowlist));
+            $remote = $_SERVER['REMOTE_ADDR'] ?? '';
+            if ($remote === '' || !in_array($remote, $allowed, true)) {
+                echo json_encode(array('status' => false, 'msg' => 'Unauthorized'), true);
+                die;
+            }
+        }
+
+        $secret = env('WORKER_SHARED_SECRET', '');
+        if ($secret) {
+            $header = $_SERVER['HTTP_X_WORKER_SECRET'] ?? '';
+            if ($header === '' || !hash_equals($secret, $header)) {
+                echo json_encode(array('status' => false, 'msg' => 'Unauthorized'), true);
+                die;
+            }
+        }
+
+        return true;
+    }
 
     public function cronjob_endorse_refresh()
     {
         header('Content-Type: application/json; charset=utf-8');
         @set_time_limit(55);
 
-        $BATCH_SIZE    = 30;
-        $PARALLEL_HTTP = 10;
-        $STALE_MINUTES = 5;
-
         $this->load->model('mymodel');
         $this->load->library('template');
         $this->load->library('endorse_sync');
+        $this->load->library('EndorseRefreshQueueService');
 
-        $worker_id = uniqid('w_', true);
-        $now       = date('Y-m-d H:i:s');
-        $today     = date('Y-m-d');
-
-        $this->db->query("
-            UPDATE endorse_refresh_queue_attempts a
-            INNER JOIN endorse_refresh_queue q ON q.id = a.queue_id
-            SET a.status = 'retrying',
-                a.error_class = 'transient',
-                a.error_message = 'Worker stalled; item returned to pending queue',
-                a.finished_at = '$now'
-            WHERE a.status = 'processing'
-              AND q.status = 'processing'
-              AND q.started_at < (NOW() - INTERVAL $STALE_MINUTES MINUTE)
-        ");
-        $this->db->query("
-            UPDATE endorse_refresh_queue
-            SET status = 'pending', worker_id = NULL, started_at = NULL, claimed_at = NULL
-            WHERE status = 'processing'
-              AND started_at < (NOW() - INTERVAL $STALE_MINUTES MINUTE)
-        ");
-
-        $this->db->query("
-            UPDATE endorse_refresh_queue
-            SET status = 'processing', worker_id = '$worker_id', claimed_at = '$now', started_at = '$now'
-            WHERE status = 'pending' AND worker_id IS NULL
-            ORDER BY priority DESC, created_at ASC
-            LIMIT $BATCH_SIZE
-        ");
-        $claimed_count = $this->db->affected_rows();
-
-        if ($claimed_count <= 0) {
+        $force = ($this->input->get_post('force') === '1');
+        $driver = strtolower(trim((string) env('ENDORSE_REFRESH_DRIVER', 'cron')));
+        if ($driver === 'rust' && !$force) {
             echo json_encode([
-                'status'    => true,
-                'worker'    => $worker_id,
+                'status' => true,
                 'processed' => 0,
-                'msg'       => 'No pending endorse refresh items',
+                'driver' => 'rust',
+                'msg' => 'Rust consumer owns draining; cron standing down',
             ]);
             die;
         }
 
-        $items = $this->mymodel->selectWithQuery("
-            SELECT * FROM endorse_refresh_queue
-            WHERE worker_id = '$worker_id' AND status = 'processing'
-        ");
-        $attemptRows = [];
-        foreach ($items as $item) {
-            $attemptRows[] = [
-                'queue_id' => intval($item['id']),
-                'attempt_no' => intval($item['attempts']) + 1,
-                'worker_id' => $worker_id,
-                'status' => 'processing',
-                'started_at' => $now,
-                'created_at' => $now,
-            ];
-        }
-        if (!empty($attemptRows)) {
-            $this->db->insert_batch('endorse_refresh_queue_attempts', $attemptRows);
-        }
+        $parallel = intval(env('ENDORSE_REFRESH_PARALLEL_HTTP', 10));
+        $parallel = max(1, min(20, $parallel));
+        $deadline = floatval(env('ENDORSE_REFRESH_DEADLINE_SEC', 45));
+        $limit = $force
+            ? intval(env('ENDORSE_REFRESH_FORCE_BATCH', 250))
+            : intval(env('ENDORSE_REFRESH_BATCH_SIZE', 40));
 
-        $endorse_ids = array_map(function ($r) {
-            return intval($r['id_endorse']);
-        }, $items);
+        $claim = $this->endorserefreshqueueservice->claimBatch([
+            'limit' => $limit,
+            'force' => $force,
+            'stale_minutes' => 5,
+        ]);
 
-        $endorse_id_list = implode(',', $endorse_ids);
-        $endorseRows = $this->mymodel->selectWithQuery("
-            SELECT * FROM endorse WHERE id IN ($endorse_id_list)
-        ");
-        $endorseMap = [];
-        foreach ($endorseRows as $r) {
-            $endorseMap[intval($r['id'])] = $r;
+        if (!empty($claim['skipped'])) {
+            $skip = $claim['skipped'];
+            echo json_encode([
+                'status' => true,
+                'processed' => 0,
+                'used' => $skip['used'] ?? null,
+                'cap' => $skip['cap'] ?? null,
+                'msg' => $skip['msg'] ?? 'Skipped',
+            ]);
+            die;
         }
 
-        $prevStatsMap = $this->endorse_sync->load_prev_stats_batch($endorse_ids, $today);
+        $items = $claim['items'] ?? [];
+        $workerId = $claim['worker_id'] ?? null;
+        if (empty($items)) {
+            echo json_encode([
+                'status' => true,
+                'worker' => $workerId,
+                'processed' => 0,
+                'msg' => 'No pending endorse refresh items',
+            ]);
+            die;
+        }
 
         $tasks = [];
-        foreach ($items as $i => $item) {
-            $tasks[$i] = ['platform' => $item['platform'], 'url' => $item['link_upload']];
-        }
-        $responses = $this->template->get_social_media_batch($tasks, $PARALLEL_HTTP);
-
-        $completed = 0;
-        $failed = 0;
-        $retrying = 0;
-        $touched_campaigns = [];
-
-        foreach ($items as $i => $item) {
-            $queue_id    = intval($item['id']);
-            $id_endorse  = intval($item['id_endorse']);
-            $endorse     = $endorseMap[$id_endorse] ?? null;
-            $attempts    = intval($item['attempts']) + 1;
-            $maxAttempts = intval($item['max_attempts']);
-            $response    = $responses[$i] ?? ['status' => false, 'msg' => 'No response', 'data' => []];
-
-            if (!$endorse) {
-                $this->mark_queue_failed($queue_id, $attempts, 'Endorse row no longer exists', Endorse_sync::ERR_PERMANENT, $worker_id);
-                $failed++;
-                continue;
-            }
-
-            $result = $this->endorse_sync->apply(
-                $endorse,
-                $response,
-                intval($item['enqueued_by'] ?: 0),
-                $prevStatsMap[$id_endorse] ?? null
-            );
-
-            if ($result['status']) {
-                $completedAt = date('Y-m-d H:i:s');
-                $this->db->update('endorse_refresh_queue', [
-                    'status'        => 'completed',
-                    'attempts'      => $attempts,
-                    'error_message' => null,
-                    'worker_id'     => null,
-                    'completed_at'  => $completedAt,
-                ], ['id' => $queue_id]);
-                $this->finalize_queue_attempt($queue_id, $attempts, $worker_id, 'completed', null, null, $completedAt);
-                $touched_campaigns[intval($endorse['id_campaign'])] = true;
-                $completed++;
-                continue;
-            }
-
-            $errorClass = $result['error_class'] ?? Endorse_sync::ERR_TRANSIENT;
-            $msg = $result['msg'] ?: 'Gagal';
-
-            if ($errorClass === Endorse_sync::ERR_PERMANENT || $errorClass === Endorse_sync::ERR_EMPTY) {
-                $this->mark_queue_failed($queue_id, $attempts, $msg, $errorClass, $worker_id);
-                $failed++;
-                continue;
-            }
-
-            if ($attempts >= $maxAttempts) {
-                $this->mark_queue_failed($queue_id, $attempts, "$msg (after $attempts attempts)", $errorClass, $worker_id);
-                $failed++;
-            } else {
-                $finishedAt = date('Y-m-d H:i:s');
-                $this->db->update('endorse_refresh_queue', [
-                    'status'        => 'pending',
-                    'attempts'      => $attempts,
-                    'error_message' => $msg,
-                    'worker_id'     => null,
-                    'started_at'    => null,
-                    'claimed_at'    => null,
-                ], ['id' => $queue_id]);
-                $this->finalize_queue_attempt($queue_id, $attempts, $worker_id, 'retrying', $errorClass, $msg, $finishedAt);
-                $retrying++;
-            }
+        foreach ($items as $index => $item) {
+            $tasks[$index] = [
+                'platform' => $item['platform'],
+                'url' => $item['url'],
+                'influencer_id' => intval($item['influencer_id'] ?? 0),
+                'rescue_lane' => !empty($item['rescue_lane']),
+                'timeout_sec' => intval($item['timeout_sec']),
+                'hd' => intval($item['hd']),
+            ];
         }
 
-        foreach (array_keys($touched_campaigns) as $cid) {
-            $this->endorse_sync->update_campaign_parent($cid, 0);
-        }
+        $responses = $this->template->get_social_media_batch($tasks, $parallel, $deadline);
+        $summary = $this->endorserefreshqueueservice->applyResults($items, $responses);
 
         echo json_encode([
-            'status'    => true,
-            'worker'    => $worker_id,
-            'processed' => count($items),
-            'completed' => $completed,
-            'failed'    => $failed,
-            'retrying'  => $retrying,
-            'msg'       => count($items) . " items: $completed ok, $failed failed, $retrying retrying",
+            'status' => true,
+            'worker' => $workerId,
+            'processed' => $summary['processed'],
+            'completed' => $summary['completed'],
+            'failed' => $summary['failed'],
+            'retrying' => $summary['retrying'],
+            'deferred' => $summary['deferred'],
+            'msg' => $summary['processed'] . " items: {$summary['completed']} ok, {$summary['failed']} failed, {$summary['retrying']} retrying, {$summary['deferred']} deferred",
         ]);
         die;
-    }
-
-    private function mark_queue_failed(int $queue_id, int $attempts, string $msg, ?string $errorClass = null, ?string $worker_id = null): void
-    {
-        $completedAt = date('Y-m-d H:i:s');
-        $this->db->update('endorse_refresh_queue', [
-            'status'        => 'failed',
-            'attempts'      => $attempts,
-            'error_message' => $msg,
-            'worker_id'     => null,
-            'completed_at'  => $completedAt,
-        ], ['id' => $queue_id]);
-        $this->finalize_queue_attempt($queue_id, $attempts, $worker_id, 'failed', $errorClass, $msg, $completedAt);
-    }
-
-    private function finalize_queue_attempt(int $queue_id, int $attemptNo, ?string $worker_id, string $status, ?string $errorClass, ?string $msg, string $finishedAt): void
-    {
-        $where = [
-            'queue_id' => $queue_id,
-            'attempt_no' => $attemptNo,
-        ];
-        if (!empty($worker_id)) {
-            $where['worker_id'] = $worker_id;
-        }
-
-        $this->db->update('endorse_refresh_queue_attempts', [
-            'status' => $status,
-            'error_class' => $errorClass,
-            'error_message' => $msg,
-            'finished_at' => $finishedAt,
-        ], $where);
     }
 
     public function cronjob_endorse_refresh_enqueue_daily()
@@ -302,6 +368,302 @@ class Api_v2 extends CI_Controller
                 'data' => $summary
             ]));
     }
+    function cronjob_endorse_refresh_enqueue_all()
+    {
+        header('Content-Type: application/json; charset=utf-8');
+        $this->worker_auth_guard();
+
+        $this->load->library('EndorseRefreshQueueService');
+        $result = $this->endorserefreshqueueservice->enqueueAllActive(0);
+
+        echo json_encode($result);
+        die;
+    }
+
+    function endorse_refresh_claim()
+    {
+        header('Content-Type: application/json; charset=utf-8');
+        $this->worker_auth_guard();
+        $this->load->library('EndorseRefreshQueueService');
+
+        $payload = json_decode(file_get_contents('php://input'), true);
+        if (!is_array($payload)) {
+            $payload = [];
+        }
+        $limit = intval($payload['limit'] ?? env('ENDORSE_REFRESH_BATCH_SIZE', 40));
+
+        // force is never honoured here — the worker path always respects the caps.
+        $claim = $this->endorserefreshqueueservice->claimBatch([
+            'limit'         => $limit,
+            'force'         => false,
+            'stale_minutes' => 5,
+        ]);
+
+        echo json_encode([
+            'status'    => true,
+            'worker_id' => $claim['worker_id'] ?? null,
+            'claimed'   => $claim['claimed'] ?? 0,
+            'skipped'   => $claim['skipped'] ?? null,
+            'items'     => $claim['items'] ?? [],
+        ]);
+        die;
+    }
+
+    function endorse_refresh_result()
+    {
+        header('Content-Type: application/json; charset=utf-8');
+        $this->worker_auth_guard();
+        $this->load->library('EndorseRefreshQueueService');
+
+        $payload = json_decode(file_get_contents('php://input'), true);
+        $results = is_array($payload) ? ($payload['results'] ?? null) : null;
+        if (!is_array($results) || empty($results)) {
+            echo json_encode(['status' => true, 'processed' => 0, 'msg' => 'No results to apply']);
+            die;
+        }
+
+        // Map posted responses by queue_id (last write wins on duplicates).
+        $responseByQueue = [];
+        foreach ($results as $r) {
+            if (!is_array($r)) {
+                continue;
+            }
+            $qid = intval($r['queue_id'] ?? 0);
+            if ($qid <= 0) {
+                continue;
+            }
+            $resp = $r['response'] ?? null;
+            $responseByQueue[$qid] = is_array($resp)
+                ? $resp
+                : ['status' => false, 'msg' => 'No response', 'data' => []];
+        }
+        if (empty($responseByQueue)) {
+            echo json_encode(['status' => true, 'processed' => 0, 'msg' => 'No valid results']);
+            die;
+        }
+
+        // Re-read authoritative rows still owned by a worker (status='processing'). Rows
+        // that already timed out and were reset by resetStuck are simply skipped here.
+        $queueIdList = implode(',', array_map('intval', array_keys($responseByQueue)));
+        $rows = $this->mymodel->selectWithQuery("
+            SELECT * FROM endorse_refresh_queue
+            WHERE id IN ($queueIdList) AND status = 'processing'
+        ");
+
+        $items = [];
+        $responses = [];
+        foreach ($rows as $row) {
+            $qid = intval($row['id']);
+            if (!isset($responseByQueue[$qid])) {
+                continue;
+            }
+            $items[] = [
+                'queue_id'     => $qid,
+                'id_endorse'   => intval($row['id_endorse']),
+                'purpose'      => strval($row['purpose'] ?? 'daily'),
+                'enqueued_by'  => intval($row['enqueued_by'] ?: 0),
+                'attempts'     => intval($row['attempts']),
+                'max_attempts' => intval($row['max_attempts']),
+                'worker_id'    => strval($row['worker_id']),
+            ];
+            $responses[] = $responseByQueue[$qid];
+        }
+
+        $summary = $this->endorserefreshqueueservice->applyResults($items, $responses);
+
+        echo json_encode([
+            'status'    => true,
+            'processed' => $summary['processed'],
+            'completed' => $summary['completed'],
+            'failed'    => $summary['failed'],
+            'retrying'  => $summary['retrying'],
+            'deferred'  => $summary['deferred'],
+            'msg'       => $summary['processed'] . " applied: {$summary['completed']} ok, {$summary['failed']} failed, {$summary['retrying']} retrying, {$summary['deferred']} deferred",
+        ]);
+        die;
+    }
+
+    function cronjob_endorse_rollup()
+    {
+        header('Content-Type: application/json; charset=utf-8');
+        $full = ($this->input->get('full') === '1');
+        @set_time_limit($full ? 0 : 55);
+
+        $windowDays = intval(env('ENDORSE_ROLLUP_WINDOW_DAYS', 60));
+        if ($windowDays <= 0) {
+            $windowDays = 60;
+        }
+        $since = $full ? '1970-01-01' : date('Y-m-d', strtotime('-' . $windowDays . ' days'));
+
+        $sql = "
+            INSERT INTO endorse_logs_daily_rollup
+                (id_endorse, log_date, likes_delta, comment_delta, share_save_delta, views_delta,
+                 likes_after, comment_after, share_save_after, views_after, total_cost, last_updated)
+            SELECT
+                el.id_endorse,
+                el.log_date,
+                SUM(GREATEST(COALESCE(el.likes, 0), 0)),
+                SUM(GREATEST(COALESCE(el.comment, 0), 0)),
+                SUM(GREATEST(COALESCE(el.share_save, 0), 0)),
+                SUM(GREATEST(COALESCE(el.views, 0), 0)),
+                MAX(COALESCE(el.likes_after, 0)),
+                MAX(COALESCE(el.comment_after, 0)),
+                MAX(COALESCE(el.share_save_after, 0)),
+                MAX(COALESCE(el.views_after, 0)),
+                MAX(COALESCE(el.total_cost, 0)),
+                MAX(COALESCE(el.updated_at, el.created_at, CONCAT(el.date, ' 00:00:00')))
+            FROM endorse_logs el
+            WHERE el.log_date IS NOT NULL
+              AND el.log_date >= " . $this->db->escape($since) . "
+            GROUP BY el.id_endorse, el.log_date
+            ON DUPLICATE KEY UPDATE
+                likes_delta = VALUES(likes_delta),
+                comment_delta = VALUES(comment_delta),
+                share_save_delta = VALUES(share_save_delta),
+                views_delta = VALUES(views_delta),
+                likes_after = VALUES(likes_after),
+                comment_after = VALUES(comment_after),
+                share_save_after = VALUES(share_save_after),
+                views_after = VALUES(views_after),
+                total_cost = VALUES(total_cost),
+                last_updated = VALUES(last_updated)
+        ";
+
+        try {
+            if ($this->db->query($sql) === false) {
+                throw new RuntimeException('Gagal memperbarui endorse_logs_daily_rollup.');
+            }
+            $affected = $this->db->affected_rows();
+            echo json_encode(['status' => true, 'full' => $full, 'since' => $since, 'affected_rows' => $affected]);
+        } catch (Throwable $e) {
+            log_message('error', 'endorse rollup failed: ' . $e->getMessage());
+            echo json_encode(['status' => false, 'msg' => $e->getMessage()]);
+        }
+        die;
+    }
+
+    function cronjob_tiktok_sync()
+    {
+        header('Content-Type: application/json; charset=utf-8');
+
+        $this->load->model('mymodel');
+        $this->load->library('template');
+
+        $synced = 0;
+        $failed = 0;
+        $maxPerRun = 20;
+        $processed = 0;
+
+        // Tier 1 (Hot): sync_at IS NULL or new records
+        $tier1_influencer = $this->mymodel->selectWithQuery("
+            SELECT id, type, url FROM influencer
+            WHERE status = 'Aktif' AND url != '' AND type = 'Tiktok'
+            AND sync_at IS NULL
+            LIMIT 10
+        ");
+        foreach ($tier1_influencer as $row) {
+            if ($processed >= $maxPerRun) break;
+            $result = $this->template->syncTiktokProfile('influencer', $row['id'], $row['type'], $row['url']);
+            if ($result['status']) $synced++; else $failed++;
+            $processed++;
+            usleep(300000);
+        }
+
+        $tier1_dummy = $this->mymodel->selectWithQuery("
+            SELECT id, type, url FROM influencer_dummy
+            WHERE status = 'Aktif' AND url != '' AND type = 'Tiktok'
+            AND sync_at IS NULL
+            LIMIT 10
+        ");
+        foreach ($tier1_dummy as $row) {
+            if ($processed >= $maxPerRun) break;
+            $result = $this->template->syncTiktokProfile('influencer_dummy', $row['id'], $row['type'], $row['url']);
+            if ($result['status']) $synced++; else $failed++;
+            $processed++;
+            usleep(300000);
+        }
+
+        // Tier 2 (Active): Has active endorsement campaign - every 3 days
+        if ($processed < $maxPerRun) {
+            $three_days_ago = date('Y-m-d', strtotime('-3 days'));
+            $tier2 = $this->mymodel->selectWithQuery("
+                SELECT DISTINCT i.id, i.type, i.url FROM influencer i
+                INNER JOIN endorse e ON e.influencer = i.id
+                INNER JOIN endorse_campaign ec ON e.id_campaign = ec.id
+                WHERE i.status = 'Aktif' AND i.url != '' AND i.type = 'Tiktok'
+                AND ec.status = 'Aktif'
+                AND (i.sync_at < ('$three_days_ago' + INTERVAL 1 DAY) OR i.sync_at IS NULL)
+                LIMIT 10
+            ");
+            foreach ($tier2 as $row) {
+                if ($processed >= $maxPerRun) break;
+                $result = $this->template->syncTiktokProfile('influencer', $row['id'], $row['type'], $row['url']);
+                if ($result['status']) $synced++; else $failed++;
+                $processed++;
+                usleep(300000);
+            }
+        }
+
+        // Tier 3 (Regular): Active influencer, synced > 7 days ago
+        if ($processed < $maxPerRun) {
+            $seven_days_ago = date('Y-m-d', strtotime('-7 days'));
+            $tier3_influencer = $this->mymodel->selectWithQuery("
+                SELECT id, type, url FROM influencer
+                WHERE status = 'Aktif' AND url != '' AND type = 'Tiktok'
+                AND sync_at < ('$seven_days_ago' + INTERVAL 1 DAY)
+                LIMIT 5
+            ");
+            foreach ($tier3_influencer as $row) {
+                if ($processed >= $maxPerRun) break;
+                $result = $this->template->syncTiktokProfile('influencer', $row['id'], $row['type'], $row['url']);
+                if ($result['status']) $synced++; else $failed++;
+                $processed++;
+                usleep(300000);
+            }
+
+            $tier3_dummy = $this->mymodel->selectWithQuery("
+                SELECT id, type, url FROM influencer_dummy
+                WHERE status = 'Aktif' AND url != '' AND type = 'Tiktok'
+                AND sync_at < ('$seven_days_ago' + INTERVAL 1 DAY)
+                LIMIT 5
+            ");
+            foreach ($tier3_dummy as $row) {
+                if ($processed >= $maxPerRun) break;
+                $result = $this->template->syncTiktokProfile('influencer_dummy', $row['id'], $row['type'], $row['url']);
+                if ($result['status']) $synced++; else $failed++;
+                $processed++;
+                usleep(300000);
+            }
+        }
+
+        // Tier 4 (Cold): Active but synced > 14 days ago
+        if ($processed < $maxPerRun) {
+            $fourteen_days_ago = date('Y-m-d', strtotime('-14 days'));
+            $tier4 = $this->mymodel->selectWithQuery("
+                SELECT id, type, url FROM influencer
+                WHERE status = 'Aktif' AND url != '' AND type = 'Tiktok'
+                AND sync_at < ('$fourteen_days_ago' + INTERVAL 1 DAY)
+                LIMIT 5
+            ");
+            foreach ($tier4 as $row) {
+                if ($processed >= $maxPerRun) break;
+                $result = $this->template->syncTiktokProfile('influencer', $row['id'], $row['type'], $row['url']);
+                if ($result['status']) $synced++; else $failed++;
+                $processed++;
+                usleep(300000);
+            }
+        }
+
+        echo json_encode([
+            'status'    => true,
+            'synced'    => $synced,
+            'failed'    => $failed,
+            'processed' => $processed,
+            'msg'       => "$synced synced, $failed failed out of $processed processed",
+        ]);
+        die;
+    }
+
     
     function update_cronjob(){
         $platform = 'Tiktok';
@@ -4128,180 +4490,164 @@ class Api_v2 extends CI_Controller
 
     function cronjob_influencer()
     {
-
-
-        $user = $_SESSION['user'];
-
-        $mode = strval($_GET['mode']);
-
-        $target = DATE("Y-m-d 11:00:00");
-        $now = DATE("Y-m-d H:i:s");
-        if ($mode != 'true') {
-            if ($now >= $target) {
-                // SKIP
-            } else {
-                header('Content-Type: application/json; charset=utf-8');
-                $html = array();
-                $html['status'] = false;
-                $html['data'] = array();
-                $html['msg'] = "BKA System influencer cronjob will be processed at " . $target . "!";
-                echo json_encode($html, true);
-                die;
-            }
-        }
-        $today = DATE("Y-m-d");
-        $today = DATE('Y-m-d', strtotime($today . " -7 days"));
-        $todayy = $today;
-        $list = $this->mymodel->selectWithQuery("SELECT * FROM influencer WHERE status = 'Aktif' AND DATE(sync_at) <= '$today' OR DATE(sync_at) IS NULL AND url != '' LIMIT 10");
-        foreach ($list as $kl => $vl) {
-            $id = $vl['id'];
-            $query = $vl;
-
-            $endorse = $this->mymodel->selectWithQuery("SELECT COUNT(id) as frequency, SUM(total_cost) as total_cost, SUM(views) as views, 
-            AVG(views) as avg_views, 
-            AVG(likes+comment+share_save) as avg_interaksi, 
-            SUM(likes) as likes,
-            SUM(share_save) as share,
-            SUM(comment) as comment
-            FROM endorse WHERE influencer = '$id'
-            AND link_upload != ''
-            ");
-            $endorse = $endorse[0];
-
-            $dt = array();
-            $dt['sync_at'] = DATE("Y-m-d H:i:s");
-            $dt['frequency'] = $endorse['frequency'];
-            $dt['total_cost'] = $endorse['total_cost'];
-            $dt['view'] = $endorse['views'];
-            $dt['like'] = $endorse['likes'];
-            $dt['comment'] = $endorse['comment'];
-            $dt['collect'] = $endorse['collect'];
-            $dt['share'] = $endorse['share'];
-            $dt['avg_view'] = $endorse['avg_views'];
-            $dt['avg_interaksi'] = $endorse['avg_interaksi'];
-            if ($endorse['total_cost'] > 0 && $endorse['views'] > 0) {
-                $dt['cpm'] = $endorse['total_cost'] / $endorse['views'] * 1000;
-            } else {
-                $dt['cpm'] = 0;
-            }
-
-            $this->db->update('influencer', $dt, array('id' => $id));
-
-            $url = $query['url'];
-
-            $response = $this->template->get_account_id($query['type'], $query['url']);
-            // print_r($response);die;
-            if ($response['status'] == false) {
-                // $msg = $response['msg'];
-                // echo $this->template->alert_danger($msg);
-                // die;
-            } else {
-                $dt['updated_at'] = DATE("Y-m-d H:i:s");
-                $dt['updated_by'] = strval($user['id']);
-                $dt['account_id'] = $response['data']['account_id'];
-                // print_r($response);die;
-                $dt['img'] = $response['data']['img'];
-                $dt['follower'] = $response['data']['follower'];
-                $dt['media_count'] = $response['data']['media_count'];
-                // print_r($dt);die;
-                $this->db->update('influencer', $dt, array('id' => $id));
-
-                if ($query['type'] == "Tiktok") {
-                    $url = $query['url'];
-                    $uri = explode("/", parse_url($url, PHP_URL_PATH));
-                    $username = $uri[1];
-                    $username = str_replace('@', '', $username);
-                    $response = $this->template->get_post_list($query['type'], $response['data']['username'] ?? $username);
-                } else {
-                    $response = $this->template->get_post_list($query['type'], $response['data']['account_id']);
-                }
-
-                if ($response['status'] == false) {
-                    // $msg = $response['msg'];
-                    // echo $this->template->alert_danger($msg);
-                    // die;
-                } else {
-                    $dt = array();
-                    $dt['updated_at'] = DATE("Y-m-d H:i:s");
-                    $dt['updated_by'] = strval($user['id']);
-                    $dt['like'] = 0;
-                    $dt['comment'] = 0;
-                    $dt['collect'] = 0;
-                    $dt['share'] = 0;
-                    $dt['view'] = 0;
-                    // print_r($response['data']);
-                    $i = 0;
-                    foreach ($response['data'] as $k => $v) {
-                        $dt['like'] += $v['like'];
-                        $dt['comment'] += $v['comment'];
-                        $dt['collect'] += $v['collect'];
-                        $dt['share'] += $v['share'];
-                        $dt['view'] += $v['view'];
-                        if ($i >= 10) {
-                            break;
-                        }
-                        $i++;
-                    }
-                    if ($dt['view'] > 0) {
-                        $dt['avg_view'] = $dt['view'] / 10;
-                    }
-                    if (($dt['like'] + $dt['comment'] + $dt['collect'] + $dt['share'])  > 0) {
-                        $dt['avg_interaksi'] = ($dt['like'] + $dt['comment'] + $dt['collect'] + $dt['share']) / 10;
-                    }
-                    if ($dt['view'] > 0 && $dt['avg_interaksi'] > 0) {
-                        $dt['er'] = $dt['avg_interaksi'] / $dt['avg_view'] * 100;
-                    }
-                    $dt['sync_at'] = DATE("Y-m-d H:i:s");
-                    // $this->db->update('influencer', $dt, array('id' => $id));
-
-                    $today = DATE("Y-m-d");
-                    $logs = $this->mymodel->selectWithQuery("SELECT id FROM influencer_logs WHERE id_influencer = '$id' AND DATE(date) = '$today' ");
-                    $logs = $logs[0];
-                    if ($logs) {
-                        $dt['updated_at'] = DATE("Y-m-d H:i:s");
-                        $this->db->update('influencer_logs', $dt, array('id' => $logs['id']));
-                    } else {
-                        $dt['id_influencer'] = $id;
-                        $dt['date'] = $today;
-                        $dt['status'] = "Aktif";
-                        $dt['created_at'] = DATE("Y-m-d H:i:s");
-                        $this->db->insert('influencer_logs', $dt);
-                    }
-
-                    $dt_2 = array();
-                    $dt_2['sync_at'] = $dt['sync_at'];
-                    $dt_2['frequency_2'] = $i;
-                    $dt_2['er'] = $dt['er'];
-                    $dt_2['updated_at'] = DATE("Y-m-d H:i:s");
-                    $dt_2['updated_by'] = strval($user['id']);
-                    $dt_2['view_2'] = $dt['view'];
-                    $dt_2['like_2'] = $dt['like'];
-                    $dt_2['collect_2'] = $dt['collect'];
-                    $dt_2['share_2'] = $dt['share'];
-                    $dt_2['comment_2'] = $dt['comment'];
-                    $dt_2['avg_view_2'] = $dt['view'] / $i;
-                    $dt_2['avg_interaksi_2'] = ($dt['like'] + $dt['comment'] + $dt['collect'] + $dt['share']) / $i;
-
-                    if ($query['ratecard'] > 0 && $dt['view'] > 0) {
-                        $dt_2['cpm_2'] = $query['ratecard'] / $dt_2['avg_view_2'] * 1000;
-                    } else {
-                        $dt_2['cpm_2'] = 0;
-                    }
-
-                    $this->db->update('influencer', $dt_2, array('id' => $id));
-
-                    // $msg = "Refresh data berhasil!";
-                    // echo $this->template->alert_success($msg);
-                    // die;
-                }
-            }
-        }
+        date_default_timezone_set('Asia/Jakarta');
         header('Content-Type: application/json; charset=utf-8');
-        $html = array();
-        $html['status'] = true;
-        $html['data'] = array();
-        $html['msg'] = count($list) . " data influencer yg di sync <= $todayy berhasil diperbarui";
-        echo json_encode($html, true);
+
+        $mode = strval($this->input->get('mode'));
+        $target = date('Y-m-d 11:00:00');
+        if ($mode !== 'true' && date('Y-m-d H:i:s') < $target) {
+            echo json_encode(['status' => false, 'data' => [], 'msg' => 'BKA System influencer cronjob will be processed at ' . $target . '!']);
+            die;
+        }
+
+        $threshold = date('Y-m-d', strtotime('-7 days'));
+        $rows = $this->mymodel->selectWithQuery("
+            SELECT *
+            FROM influencer
+            WHERE status = 'Aktif'
+              AND url != ''
+              AND type != 'Tiktok'
+              AND (DATE(sync_at) <= '$threshold' OR sync_at IS NULL)
+            ORDER BY sync_at IS NULL DESC, sync_at ASC, id ASC
+            LIMIT 10
+        ") ?: [];
+
+        $synced = 0;
+        $failed = 0;
+        $errors = [];
+        foreach ($rows as $row) {
+            $id = intval($row['id']);
+            $now = date('Y-m-d H:i:s');
+            $aggregateRows = $this->mymodel->selectWithQuery("
+                SELECT COUNT(id) AS frequency,
+                       COALESCE(SUM(total_cost), 0) AS total_cost,
+                       COALESCE(SUM(views), 0) AS views,
+                       COALESCE(AVG(views), 0) AS avg_views,
+                       COALESCE(AVG(likes + comment + share_save), 0) AS avg_interaksi,
+                       COALESCE(SUM(likes), 0) AS likes,
+                       COALESCE(SUM(share_save), 0) AS share,
+                       COALESCE(SUM(comment), 0) AS comment
+                FROM endorse
+                WHERE influencer = '$id' AND link_upload != ''
+            ");
+            $aggregate = $aggregateRows[0] ?? [];
+            $views = intval($aggregate['views'] ?? 0);
+            $totalCost = floatval($aggregate['total_cost'] ?? 0);
+            $this->db->update('influencer', [
+                'sync_at' => $now,
+                'frequency' => intval($aggregate['frequency'] ?? 0),
+                'total_cost' => $totalCost,
+                'view' => $views,
+                'like' => intval($aggregate['likes'] ?? 0),
+                'comment' => intval($aggregate['comment'] ?? 0),
+                'collect' => 0,
+                'share' => intval($aggregate['share'] ?? 0),
+                'avg_view' => floatval($aggregate['avg_views'] ?? 0),
+                'avg_interaksi' => floatval($aggregate['avg_interaksi'] ?? 0),
+                'cpm' => ($totalCost > 0 && $views > 0) ? ($totalCost / $views * 1000) : 0,
+                'updated_at' => $now,
+                'updated_by' => '1',
+            ], ['id' => $id]);
+
+            if ($row['type'] === 'Threads') {
+                $profile = $this->template->get_threads_account($id, $row['url']);
+            } elseif ($row['type'] === 'Instagram') {
+                $profile = $this->template->get_account_id('Instagram', $row['url']);
+            } else {
+                $failed++;
+                $errors[] = "ID $id: Platform {$row['type']} belum didukung untuk sync external.";
+                continue;
+            }
+
+            if (empty($profile['status'])) {
+                $failed++;
+                $errors[] = "ID $id: " . ($profile['msg'] ?? 'Gagal mengambil profil.');
+                continue;
+            }
+
+            $profileData = $profile['data'] ?? [];
+            $this->db->update('influencer', [
+                'account_id' => strval($profileData['account_id'] ?? ''),
+                'img' => strval($profileData['img'] ?? ''),
+                'follower' => intval($profileData['follower'] ?? 0),
+                'media_count' => intval($profileData['media_count'] ?? 0),
+                'updated_at' => $now,
+                'updated_by' => '1',
+            ], ['id' => $id]);
+
+            $posts = $row['type'] === 'Threads'
+                ? $this->template->get_threads_post_list($id)
+                : $this->template->get_post_list('Instagram', $profileData['account_id'] ?? '');
+            if (empty($posts['status'])) {
+                $failed++;
+                $errors[] = "ID $id: " . ($posts['msg'] ?? 'Gagal mengambil daftar post.');
+                continue;
+            }
+
+            $sum = ['like' => 0, 'comment' => 0, 'collect' => 0, 'share' => 0, 'view' => 0];
+            $items = array_slice($posts['data'] ?? [], 0, 10);
+            foreach ($items as $post) {
+                foreach ($sum as $key => $unused) {
+                    $sum[$key] += intval($post[$key] ?? 0);
+                }
+            }
+            $count = count($items);
+            $avgView = $count > 0 ? $sum['view'] / $count : 0;
+            $avgInteraction = $count > 0
+                ? ($sum['like'] + $sum['comment'] + $sum['collect'] + $sum['share']) / $count
+                : 0;
+            $er = $avgView > 0 ? ($avgInteraction / $avgView * 100) : 0;
+            $ratecard = floatval($row['ratecard'] ?? 0);
+
+            $this->db->update('influencer', [
+                'sync_at' => $now,
+                'frequency_2' => $count,
+                'view_2' => $sum['view'],
+                'like_2' => $sum['like'],
+                'collect_2' => $sum['collect'],
+                'share_2' => $sum['share'],
+                'comment_2' => $sum['comment'],
+                'avg_view_2' => $avgView,
+                'avg_interaksi_2' => $avgInteraction,
+                'er' => $er,
+                'cpm_2' => ($ratecard > 0 && $avgView > 0) ? ($ratecard / $avgView * 1000) : 0,
+                'updated_at' => $now,
+                'updated_by' => '1',
+            ], ['id' => $id]);
+
+            $today = date('Y-m-d');
+            $existing = $this->mymodel->selectWithQuery("
+                SELECT id FROM influencer_logs
+                WHERE id_influencer = '$id' AND DATE(date) = '$today'
+                ORDER BY id DESC LIMIT 1
+            ");
+            $logData = $sum + [
+                'avg_view' => $avgView,
+                'avg_interaksi' => $avgInteraction,
+                'er' => $er,
+                'sync_at' => $now,
+            ];
+            if (!empty($existing)) {
+                $logData['updated_at'] = $now;
+                $this->db->update('influencer_logs', $logData, ['id' => intval($existing[0]['id'])]);
+            } else {
+                $logData['id_influencer'] = $id;
+                $logData['date'] = $today;
+                $logData['status'] = 'Aktif';
+                $logData['created_at'] = $now;
+                $this->db->insert('influencer_logs', $logData);
+            }
+            $synced++;
+        }
+
+        echo json_encode([
+            'status' => true,
+            'processed' => count($rows),
+            'synced' => $synced,
+            'failed' => $failed,
+            'errors' => $errors,
+            'msg' => "$synced influencer disinkronkan, $failed gagal.",
+        ]);
         die;
     }
 
@@ -4590,6 +4936,7 @@ class Api_v2 extends CI_Controller
             'enqueued' => 0,
             'skipped_duplicates' => 0,
             'excluded_known_url' => 0,
+            'rollup_sweep' => 0,
         ];
         foreach ($campaigns as $campaign) {
             $id_campaign = intval($campaign['id_campaign'] ?? 0);
@@ -4603,6 +4950,20 @@ class Api_v2 extends CI_Controller
             $summary['excluded_known_url'] += intval($result['excluded_known_url'] ?? 0);
         }
 
+        $sweepMarker = APPPATH . 'cache/endorse_rollup_sweep.txt';
+        $lastSweep = is_file($sweepMarker) ? intval(filemtime($sweepMarker)) : 0;
+        if (time() - $lastSweep >= 3600) {
+            $this->load->library('endorse_sync');
+            $activeCampaigns = $this->mymodel->selectWithQuery("
+                SELECT id FROM endorse_campaign WHERE status = 'Aktif' ORDER BY id ASC
+            ") ?: [];
+            foreach ($activeCampaigns as $campaign) {
+                $this->endorse_sync->update_campaign_parent(intval($campaign['id']), 0);
+                $summary['rollup_sweep']++;
+            }
+            @touch($sweepMarker);
+        }
+
         header('Content-Type: application/json; charset=utf-8');
         $html = array();
         $html['status'] = true;
@@ -4612,199 +4973,37 @@ class Api_v2 extends CI_Controller
         die;
     }
 
-    function update_endorse_parent($id_parent, $detail)
-    {
-        $v['id'] = $id_parent;
-        $today = DATE("Y-m-d");
-        $yesterday = DATE('Y-m-d', strtotime($today . " -1 days"));
-        $query = $this->mymodel->selectWithQuery("SELECT id
-        FROM endorse_campaign_logs
-        WHERE id_campaign = '$id_parent' AND date = '$today' ");
-        $query = $query[0];
-
-        $query_yesterday = $this->mymodel->selectWithQuery("SELECT *
-        FROM endorse_campaign_logs
-        WHERE id_campaign = '$id_parent' AND date < '$today' ORDER BY date DESC LIMIT 1 ");
-        $query_yesterday = $query_yesterday[0];
-
-        $item_detail = $this->mymodel->selectWithQuery("SELECT SUM(total_cost) as total_cost, COUNT(id) as count_endorse,
-        SUM(likes) as likes, SUM(comment) as comment, SUM(share_save) as share_save, SUM(views) as views, AVG(cpm) as cpm
-        FROM endorse
-        WHERE id_campaign = '$id_parent'  AND link_upload != ''
-        AND status = 'Aktif' ");
-        $item_detail = $item_detail[0];
-
-        $item = $this->mymodel->selectWithQuery("SELECT SUM(likes) as likes, SUM(comment) as comment, SUM(share_save) as share_save, SUM(views) as views, AVG(cpm) as cpm,
-        SUM(likes_after) as likes_after, SUM(comment_after) as comment_after, SUM(share_save_after) as share_save_after, SUM(views_after) as views_after, AVG(cpm_after) as cpm_after,
-        SUM(likes_before) as likes_before, SUM(comment_before) as comment_before, SUM(share_save_before) as share_save_before, SUM(views_before) as views_before, AVG(cpm_before) as cpm_before
-        FROM endorse_logs
-        WHERE id_campaign = '$id_parent';");
-        $dt = array();
-        $dt['id_campaign'] = $v['id'];
-        $dt['total_cost'] = doubleval($item_detail['total_cost']);
-        $dt['date'] = $today;
-        foreach ($item[0] as $k2 => $v2) {
-            $dt[$k2] = doubleval($v2);
-        }
-
-
-        $dtt = array();
-        foreach ($item_detail as $k3 => $v3) {
-            $dtt[$k3] = doubleval($v3);
-        }
-
-        $id_parent = $v['id'];
-
-        $summary = $this->mymodel->selectWithQuery("SELECT COUNT(id) as count
-        FROM endorse WHERE id_campaign = '$id_parent'  ");
-        $summary = $summary[0];
-        $dtt['count_endorse'] = intval($summary['count']);
-        $dt['ce_now'] = $dtt['count_endorse'];
-
-        $summary = $this->mymodel->selectWithQuery("SELECT COUNT(id) as count
-        FROM endorse WHERE id_campaign = '$id_parent' AND status = 'Aktif'  ");
-        $summary = $summary[0];
-        $dtt['count_endorse_active'] = intval($summary['count']);
-        $dt['ce_active_now'] = $dtt['count_endorse_active'];
-
-        $summary = $this->mymodel->selectWithQuery("SELECT COUNT(id) as count
-        FROM endorse WHERE id_campaign = '$id_parent' AND status = 'Aktif' 
-        AND link_upload != '' ");
-        $summary = $summary[0];
-        $dtt['count_endorse_processed'] = intval($summary['count']);
-        $dt['ce_processed_now'] = $dtt['count_endorse_processed'];
-
-
-        $summary = $this->mymodel->selectWithQuery("SELECT COUNT(DISTINCT influencer) as count
-        FROM endorse WHERE id_campaign = '$id_parent'  ");
-        $summary = $summary[0];
-        $dtt['count_influencer'] = intval($summary['count']);
-        $dt['ci_now'] = $dtt['count_influencer'];
-
-        $summary = $this->mymodel->selectWithQuery("SELECT COUNT(DISTINCT influencer) as count
-        FROM endorse WHERE id_campaign = '$id_parent' AND status = 'Aktif'  ");
-        $summary = $summary[0];
-        $dtt['count_influencer_active'] = intval($summary['count']);
-        $dt['ci_active_now'] = $dtt['count_influencer_active'];
-
-        $summary = $this->mymodel->selectWithQuery("SELECT COUNT(DISTINCT influencer) as count
-        FROM endorse WHERE id_campaign = '$id_parent' AND status = 'Aktif'  
-        AND link_upload != '' ");
-        $summary = $summary[0];
-        $dtt['count_influencer_processed'] = intval($summary['count']);
-        $dt['ci_processed_now'] = $dtt['count_influencer_processed'];
-
-        // print_r($query_yesterday);die;
-        $dt['ci_before'] =  $query_yesterday['ci_now'];
-        $dt['ci_active_before'] = $query_yesterday['ci_active_now'];
-        $dt['ci_processed_before'] = $query_yesterday['ci_processed_now'];
-
-        $dt['ce_before'] =  $query_yesterday['ce_now'];
-        $dt['ce_active_before'] = $query_yesterday['ce_active_now'];
-        $dt['ce_processed_before'] = $query_yesterday['ce_processed_now'];
-
-        $dt['ci_before'] =  $query_yesterday['ci_now'];
-        $dt['ci_active_before'] = $query_yesterday['ci_active_now'];
-        $dt['ci_processed_before'] = $query_yesterday['ci_processed_now'];
-        $dt['ce_before'] =  $query_yesterday['ce_now'];
-        $dt['ce_active_before'] = $query_yesterday['ce_active_now'];
-        $dt['ce_processed_before'] = $query_yesterday['ce_processed_now'];
-
-        $dt['ci_after'] =  $dt['ci_now'];
-        $dt['ci_active_after'] = $dt['ci_active_now'];
-        $dt['ci_processed_after'] = $dt['ci_processed_now'];
-        $dt['ce_after'] =  $dt['ce_now'];
-        $dt['ce_active_after'] = $dt['ce_active_now'];
-        $dt['ce_processed_after'] = $dt['ce_processed_now'];
-
-        $dt['ci_now'] =  $dt['ci_after'] - $dt['now_before'];
-        $dt['ci_active_now'] = $dt['ci_active_after'] - $dt['ci_active_before'];
-        $dt['ci_processed_now'] = $dt['ci_processed_after'] - $dt['ci_processed_before'];
-        $dt['ce_now'] =  $dt['ce_after'] - $dt['ce_before'];
-        $dt['ce_active_now'] = $dt['ce_active_after'] - $dt['ce_active_before'];
-        $dt['ce_processed_now'] = $dt['ce_processed_after'] - $dt['ce_processed_before'];
-
-        // $dt['is_cron'] = '1';
-        $dt_tmp = array();
-        foreach ($dt as $kt => $vt) {
-            $dt_tmp[$kt] = strval($vt);
-        }
-        $dt = $dt_tmp;
-        $dt['status'] = strval($detail['status']);
-
-        $campaign = $this->mymodel->selectDataOne('endorse_campaign', array('id' => $id_parent));
-        $dt['brand'] = strval($campaign['brand']);
-
-
-        if ($query) {
-            $dt['updated_at'] = DATE("Y-m-d H:i:s");
-            $dt['updated_by'] = strval($user['id']);
-            $this->db->update('endorse_campaign_logs', $dt, array('id' => $query['id']));
-            // $id_parent = $query['id'];
-        } else {
-            $dt['created_at'] = DATE("Y-m-d H:i:s");
-            $dt['created_by'] = strval($user['id']);
-            $this->db->insert('endorse_campaign_logs', $dt);
-            // $id_parent = $this->db->insert_id();
-        }
-
-        $dt_tmp = array();
-        foreach ($dtt as $kt => $vt) {
-            $dt_tmp[$kt] = strval($vt);
-        }
-        $dtt = $dt_tmp;
-
-        $dtt['updated_at'] = DATE("Y-m-d H:i:s");
-        $dtt['updated_by'] = strval($user['id']);
-        $this->db->update('endorse_campaign', $dtt, array('id' => $v['id']));
-    }
-
     function cronjob_endorse_campaign()
     {
-
-
-        $user = $_SESSION['user'];
-
-        $mode = strval($_GET['mode']);
-
-        $target = DATE("Y-m-d 11:00:00");
-        $now = DATE("Y-m-d H:i:s");
-        if ($mode != 'true') {
-            if ($now >= $target) {
-                // SKIP
-            } else {
-                header('Content-Type: application/json; charset=utf-8');
-                $html = array();
-                $html['status'] = false;
-                $html['data'] = array();
-                $html['msg'] = "BKA System endorse campaign cronjob will be processed at " . $target . "!";
-                echo json_encode($html, true);
-                die;
-            }
-        }
-        $today = DATE("Y-m-d");
-        $today = DATE('Y-m-d', strtotime($today . " -1 days"));
-        $todayy = $today;
-
-        $list = $this->mymodel->selectWithQuery("SELECT * FROM endorse_campaign WHERE status = 'Aktif' LIMIT 10");
-
-        foreach ($list as $kl => $vl) {
-            $id_campaign = $vl['id'];
-
-            $id_parent = $vl['id'];
-            $this->update_endorse_parent($id_parent, $vl);
-        }
-
-
-
+        date_default_timezone_set('Asia/Jakarta');
         header('Content-Type: application/json; charset=utf-8');
-        $html = array();
-        $html['status'] = true;
-        $html['data'] = array();
-        $html['msg'] = count($list) . " data endorse campaign yg di sync <= $todayy berhasil diperbarui";
-        echo json_encode($html, true);
+
+        $mode = strval($this->input->get('mode'));
+        $target = date('Y-m-d 11:00:00');
+        if ($mode !== 'true' && date('Y-m-d H:i:s') < $target) {
+            echo json_encode(['status' => false, 'data' => [], 'msg' => 'BKA System endorse campaign cronjob will be processed at ' . $target . '!']);
+            die;
+        }
+
+        $this->load->library('endorse_sync');
+        $rows = $this->mymodel->selectWithQuery("
+            SELECT id FROM endorse_campaign
+            WHERE status = 'Aktif'
+            ORDER BY id ASC
+            LIMIT 10
+        ") ?: [];
+        foreach ($rows as $row) {
+            $this->endorse_sync->update_campaign_parent(intval($row['id']), 0);
+        }
+
+        echo json_encode([
+            'status' => true,
+            'data' => ['campaigns' => count($rows)],
+            'msg' => count($rows) . ' data endorse campaign berhasil diperbarui',
+        ]);
         die;
     }
+
     public function webhook()
     {
         date_default_timezone_set('Asia/Jakarta');
