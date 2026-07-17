@@ -1,5 +1,7 @@
 # TikTok Integration Spec
 
+> Port note (2026-07-17): the direct HTML-scrape sections below document the upstream source architecture only. This deployment does not execute HTML scraping, cookies, or fetch-mode switching; TikTok profile and content metrics use RapidAPI only. See [tiktok-sync-source-reference.md](tiktok-sync-source-reference.md) for the active contract.
+
 ## Summary
 
 This document describes the current TikTok integration implemented in this repository so it can be cloned into another application without reverse-engineering the PHP code.
