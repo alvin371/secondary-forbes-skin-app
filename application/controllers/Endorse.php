@@ -35,6 +35,8 @@ class Endorse extends BaseController
             'queue_history' => 'view',
             'queue_count' => 'view',
             'queue_enqueue_daily' => 'edit',
+            'run_worker' => 'edit',
+            'reset_stuck' => 'edit',
             'get_tiktok_photo_images' => 'view',
             'get_tiktok_video_play' => 'view'
         ]);
@@ -1422,7 +1424,12 @@ class Endorse extends BaseController
         }
 
         $user_id = intval($user['id'] ?? 0);
-        $response = $this->template->get_social_media($v['platform'], $v['link_upload']);
+        $response = $this->template->get_social_media(
+            strval($v['platform'] ?? ''),
+            strval($v['link_upload'] ?? ''),
+            true,
+            intval($v['influencer'] ?? 0)
+        );
         if (is_array($response) && isset($response['status']) && $response['status'] === false) {
             $errors[] = "ID $id_endorse: " . ($response['msg'] ?? 'Gagal mengambil data social media.');
         }
@@ -1603,7 +1610,12 @@ class Endorse extends BaseController
             $dt['influencer'] = strval($v['influencer']);
             $dt['date'] = $today;
 
-            $response = $this->template->get_social_media($v['platform'], $v['link_upload']);
+            $response = $this->template->get_social_media(
+                strval($v['platform'] ?? ''),
+                strval($v['link_upload'] ?? ''),
+                true,
+                intval($v['influencer'] ?? 0)
+            );
 
             $dt['likes'] = intval($query_yesterday['likes_after']);
             $dt['comment'] = intval($query_yesterday['comment_after']);
@@ -1947,18 +1959,13 @@ class Endorse extends BaseController
             echo $this->template->alert_danger("Pastikan status campaign aktif.");
             return;
         }
-        if (($v['platform'] ?? '') === 'Instagram') {
-            $dt = [
-                'sync_at' => date("Y-m-d H:i:s"),
-                'updated_at' => date("Y-m-d H:i:s")
-            ];
-            $this->db->update('endorse', $dt, ['id' => $id]);
-            echo $this->template->alert_warning("Instagram sync memerlukan waktu. Data akan diperbarui melalui sistem antrian dalam beberapa menit.");
-            return;
-        }
-
-        $response = $this->template->get_social_media($v['platform'], $v['link_upload']);
-        if (!empty($response['status']) && $response['status'] === false) {
+        $response = $this->template->get_social_media(
+            strval($v['platform'] ?? ''),
+            strval($v['link_upload'] ?? ''),
+            true,
+            intval($v['influencer'] ?? 0)
+        );
+        if (empty($response['status'])) {
             echo $this->template->alert_danger($response['msg'] ?? 'Gagal mengambil data social media.');
             return;
         }
@@ -2101,7 +2108,7 @@ class Endorse extends BaseController
             'health'          => $health,
             'worker_status'   => $workerStatus,
             'last_activity_at' => $lastActivityAt,
-            'auto_enqueue_schedule' => 'Setiap hari 01:00 WIB',
+            'auto_enqueue_schedule' => 'Setiap hari 11:30 WIB',
         ]);
     }
 
@@ -2156,7 +2163,7 @@ class Endorse extends BaseController
             'health' => $health,
             'worker_status' => $workerStatus,
             'last_activity_at' => $lastActivityAt,
-            'auto_enqueue_schedule' => 'Setiap hari 01:00 WIB'
+            'auto_enqueue_schedule' => 'Setiap hari 11:30 WIB'
         ]);
     }
 
@@ -2199,6 +2206,47 @@ class Endorse extends BaseController
             'msg' => 'Enqueue harian selesai untuk semua campaign aktif.',
             'data' => $summary
         ]);
+    }
+
+    public function run_worker()
+    {
+        if (strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+            return $this->send_json_response(['status' => false, 'msg' => 'Method tidak diizinkan.'], 405);
+        }
+
+        $url = base_url('api/cronjob/endorse-refresh?force=1');
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 60,
+            CURLOPT_CONNECTTIMEOUT => 10,
+        ]);
+        $response = curl_exec($ch);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        $data = json_decode(strval($response), true);
+        if (!is_array($data)) {
+            $data = [
+                'status' => false,
+                'msg' => $error !== ''
+                    ? 'Gagal menjalankan worker: ' . $error
+                    : 'Worker tidak mengembalikan hasil (kemungkinan timeout).',
+            ];
+        } elseif (!isset($data['msg'])) {
+            $data['msg'] = 'Worker dijalankan: ' . intval($data['processed'] ?? 0) . ' item diproses.';
+        }
+
+        return $this->send_json_response($data);
+    }
+
+    public function reset_stuck()
+    {
+        if (strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+            return $this->send_json_response(['status' => false, 'msg' => 'Method tidak diizinkan.'], 405);
+        }
+
+        return $this->send_json_response($this->endorserefreshqueueservice->resetStuck(5));
     }
 
     public function force_retry()

@@ -46,11 +46,17 @@ $campaigns = isset($campaigns) ? $campaigns : [];
             <h4 class="mb-0">Antrian Refresh Konten</h4>
             <small class="text-muted">Status proses sinkronisasi data sosial media untuk endorse content.</small>
         </div>
-        <div>
-            <button class="btn btn-outline-primary btn-sm me-2" id="btnEnqueueDailyNow">
+        <div class="d-flex flex-wrap gap-2 justify-content-end">
+            <button class="btn btn-outline-success btn-sm" id="btnRunWorker">
+                <i class="fa fa-play"></i> Proses Sekarang
+            </button>
+            <button class="btn btn-outline-warning btn-sm" id="btnResetStuck">
+                <i class="fa fa-undo"></i> Lepas yang Macet
+            </button>
+            <button class="btn btn-outline-primary btn-sm" id="btnEnqueueDailyNow">
                 <i class="fa fa-calendar-plus"></i> Enqueue Harian Sekarang
             </button>
-            <button class="btn btn-outline-secondary btn-sm me-2" id="btnClearQueue">
+            <button class="btn btn-outline-secondary btn-sm" id="btnClearQueue">
                 <i class="fa fa-trash"></i> Clear Semua Data
             </button>
             <button class="btn btn-outline-danger btn-sm" id="btnRetryFailed" disabled>
@@ -79,7 +85,7 @@ $campaigns = isset($campaigns) ? $campaigns : [];
         <div class="queue-operator-grid">
             <div class="queue-operator-item">
                 <div class="label">Jadwal Otomatis</div>
-                <div class="value" id="queueAutoScheduleText">Setiap hari 01:00 WIB</div>
+                <div class="value" id="queueAutoScheduleText">Setiap hari 11:30 WIB</div>
             </div>
             <div class="queue-operator-item">
                 <div class="label">Aktivitas Terakhir</div>
@@ -274,6 +280,9 @@ $campaigns = isset($campaigns) ? $campaigns : [];
         if (health.last_started_at) {
             html += ' Aktivitas worker terakhir: ' + escHtml(formatDateTime(health.last_started_at)) + '.';
         }
+        if (health.stall_label) {
+            html += '<br><strong>Kemungkinan penyebab:</strong> ' + escHtml(health.stall_label) + '.';
+        }
 
         $banner.addClass('stalled').html(html).show();
     }
@@ -295,7 +304,7 @@ $campaigns = isset($campaigns) ? $campaigns : [];
         }
 
         setWorkerStatus(workerStatus, variant);
-        $('#queueAutoScheduleText').text(resp.auto_enqueue_schedule || 'Setiap hari 01:00 WIB');
+        $('#queueAutoScheduleText').text(resp.auto_enqueue_schedule || 'Setiap hari 11:30 WIB');
         $('#queueLastActivityText').text(formatDateTime(resp.last_activity_at || health.last_started_at || health.oldest_pending_at));
         $('#queueOldestPendingText').text(formatDateTime(health.oldest_pending_at));
         $('#queueLastCompletedText').text(formatDateTime(health.last_completed_at));
@@ -597,6 +606,54 @@ $campaigns = isset($campaigns) ? $campaigns : [];
             },
             complete: function() {
                 $btn.prop('disabled', false).html('<i class="fa fa-calendar-plus"></i> Enqueue Harian Sekarang');
+            }
+        });
+    });
+
+    $('#btnRunWorker').on('click', function() {
+        const $btn = $(this).prop('disabled', true).html('<i class="fa fa-circle-o-notch fa-spin"></i> Memproses...');
+        $.ajax({
+            url: baseUrl + 'endorse/run-worker',
+            method: 'POST',
+            dataType: 'json',
+            timeout: 70000,
+            success: function(resp) {
+                alert(resp.msg || ('Worker selesai: ' + (resp.processed || 0) + ' item diproses.'));
+                loadData(true);
+            },
+            error: function(xhr) {
+                const msg = xhr.responseJSON && xhr.responseJSON.msg
+                    ? xhr.responseJSON.msg
+                    : 'Gagal menjalankan worker atau proses melewati batas waktu.';
+                alert(msg);
+            },
+            complete: function() {
+                $btn.prop('disabled', false).html('<i class="fa fa-play"></i> Proses Sekarang');
+            }
+        });
+    });
+
+    $('#btnResetStuck').on('click', function() {
+        if (!confirm('Kembalikan item processing yang macet lebih dari 5 menit ke antrian?')) {
+            return;
+        }
+        const $btn = $(this).prop('disabled', true).html('<i class="fa fa-circle-o-notch fa-spin"></i> Melepas...');
+        $.ajax({
+            url: baseUrl + 'endorse/reset-stuck',
+            method: 'POST',
+            dataType: 'json',
+            success: function(resp) {
+                alert(resp.msg || 'Item yang macet sudah dikembalikan ke antrian.');
+                loadData(true);
+            },
+            error: function(xhr) {
+                const msg = xhr.responseJSON && xhr.responseJSON.msg
+                    ? xhr.responseJSON.msg
+                    : 'Gagal melepas item yang macet.';
+                alert(msg);
+            },
+            complete: function() {
+                $btn.prop('disabled', false).html('<i class="fa fa-undo"></i> Lepas yang Macet');
             }
         });
     });
