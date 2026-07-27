@@ -1128,10 +1128,10 @@ class Template
         );
     }
 
-    function get_social_media_batch(array $tasks, int $maxConcurrent = 10, float $deadlineSeconds = 45.0): array
+    function get_social_media_batch(array $tasks, int $maxConcurrent = 100, float $deadlineSeconds = 45.0): array
     {
         $results = [];
-        $maxConcurrent = max(1, min(20, $maxConcurrent));
+        $maxConcurrent = max(1, min(200, $maxConcurrent));
         $startedAt = microtime(true);
         $overBudget = function () use ($startedAt, $deadlineSeconds) {
             return $deadlineSeconds > 0 && (microtime(true) - $startedAt) >= $deadlineSeconds;

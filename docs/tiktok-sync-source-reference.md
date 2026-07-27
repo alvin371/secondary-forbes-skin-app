@@ -29,7 +29,7 @@ Normalized `get_social_media` output (the contract every apply consumes):
 Transport-failure classification (`classifyRapidApiTransportFailure`, src :622): DNS → `infra_dns`, connect → `infra_connect`, TLS → `infra_tls`, timeout/stall → `infra_stall`. Auth/config failures (`isRapidApiAuthFailure`) → `config`.
 
 **Batch fan-out** — `get_social_media_batch($tasks, $parallel, $deadline)` (src :1525):
-- curl_multi, HTTP/2 multiplexing, chunk size = `ENDORSE_REFRESH_PARALLEL_HTTP` (default 10, clamp 1–20).
+- curl_multi, HTTP/2 multiplexing, chunk size = `ENDORSE_REFRESH_PARALLEL_HTTP` (default 100, clamp 1–200).
 - Brownout backoff: on failure-heavy chunks the effective chunk halves (floor 4); recovery adds +2 per healthy chunk.
 - Wall-clock deadline (`ENDORSE_REFRESH_DEADLINE_SEC`, default 45): over-budget remaining tasks return `deferredBatchResult` (src :1641) — a distinguished `deferred` marker, not a failure.
 - **Rescue lane**: an item whose previous attempt failed with `error_class = infra_stall` is fetched alone (chunk 1), with `timeout_sec = max(45, ENDORSE_REFRESH_HTTP_TIMEOUT + 15)`, and `hd=1` for photo posts.
@@ -82,7 +82,7 @@ Order matters:
 5. Insert one `processing` attempt row per claimed item immediately (so caps see in-flight work).
 6. Per-item fetch hints: rescue lane (see §1) when the prior attempt's `error_class = infra_stall`.
 
-`force=true` bypasses both caps and uses `ENDORSE_REFRESH_FORCE_BATCH` (250) instead of `ENDORSE_REFRESH_BATCH_SIZE` (40).
+`force=true` bypasses both caps and uses `ENDORSE_REFRESH_FORCE_BATCH` (250) instead of `ENDORSE_REFRESH_BATCH_SIZE` (200).
 
 ### Apply contract (`applyResults`, src :799)
 
@@ -94,7 +94,7 @@ Per item:
 
 ### Worker (`Api_v2::cronjob_endorse_refresh`, src :7869)
 
-`@set_time_limit(55)`. Driver gate: when `ENDORSE_REFRESH_DRIVER=rust` and not forced, the cron stands down (this port keeps the gate; default and only used mode is `cron`). Flow: `claimBatch` → build fetch tasks (link, platform, rescue hints, and in this port `influencer_id`) → `get_social_media_batch(tasks, PARALLEL_HTTP, DEADLINE_SEC)` → `applyResults`. Three staggered cron entries per minute (offsets 0/20/40 s) ≈ 90–120 items/min, bounded by the per-minute cap.
+`@set_time_limit(55)`. Driver gate: when `ENDORSE_REFRESH_DRIVER=rust` and not forced, the cron stands down (this port keeps the gate; default and only used mode is `cron`). Flow: `claimBatch` → build fetch tasks (link, platform, rescue hints, and in this port `influencer_id`) → `get_social_media_batch(tasks, PARALLEL_HTTP, DEADLINE_SEC)` → `applyResults`. Each normal tick can claim up to 200 items; the three staggered cron entries remain bounded by the shared 250-attempt per-minute cap.
 
 Manual paths:
 - `Endorse::sync_process` — synchronous single-row `get_social_media` + `apply` + rollup; bypasses queue and caps.
@@ -163,9 +163,9 @@ Frozen columns `like_initial/comment_initial/share_initial/save_initial/view_ini
 | `THREADS_APP_ID` / `THREADS_APP_SECRET` | — | port addition (separate Meta app per deployment) |
 | `WORKER_SHARED_SECRET` | — | guards claim/result + enqueue-all |
 | `WORKER_IP_ALLOWLIST` | — | optional CSV |
-| `ENDORSE_REFRESH_BATCH_SIZE` | **40** | source `.env.example` says 250 but code default is 40 — standardized on 40 |
+| `ENDORSE_REFRESH_BATCH_SIZE` | 200 | normal cron/claim batch |
 | `ENDORSE_REFRESH_FORCE_BATCH` | 250 | force path |
-| `ENDORSE_REFRESH_PARALLEL_HTTP` | 10 | clamp 1–20 |
+| `ENDORSE_REFRESH_PARALLEL_HTTP` | 100 | clamp 1–200; applies to the TikTok curl-multi transport |
 | `ENDORSE_REFRESH_RATE_PER_MIN` | 250 | attempt rows / 60 s |
 | `ENDORSE_REFRESH_DAILY_CAP` | 0 (off) | attempt rows / day |
 | `ENDORSE_REFRESH_DEADLINE_SEC` | 45 | batch wall clock |

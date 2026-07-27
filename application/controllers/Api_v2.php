@@ -263,12 +263,12 @@ class Api_v2 extends CI_Controller
             die;
         }
 
-        $parallel = intval(env('ENDORSE_REFRESH_PARALLEL_HTTP', 10));
-        $parallel = max(1, min(20, $parallel));
+        $parallel = intval(env('ENDORSE_REFRESH_PARALLEL_HTTP', 100));
+        $parallel = max(1, min(200, $parallel));
         $deadline = floatval(env('ENDORSE_REFRESH_DEADLINE_SEC', 45));
         $limit = $force
             ? intval(env('ENDORSE_REFRESH_FORCE_BATCH', 250))
-            : intval(env('ENDORSE_REFRESH_BATCH_SIZE', 40));
+            : intval(env('ENDORSE_REFRESH_BATCH_SIZE', 200));
 
         $claim = $this->endorserefreshqueueservice->claimBatch([
             'limit' => $limit,
@@ -390,7 +390,7 @@ class Api_v2 extends CI_Controller
         if (!is_array($payload)) {
             $payload = [];
         }
-        $limit = intval($payload['limit'] ?? env('ENDORSE_REFRESH_BATCH_SIZE', 40));
+        $limit = intval($payload['limit'] ?? env('ENDORSE_REFRESH_BATCH_SIZE', 200));
 
         // force is never honoured here — the worker path always respects the caps.
         $claim = $this->endorserefreshqueueservice->claimBatch([
