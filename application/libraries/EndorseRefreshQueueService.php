@@ -585,9 +585,9 @@ class EndorseRefreshQueueService
         $this->CI->load->library('template');
         $this->CI->load->library('endorse_sync');
 
-        $limit = intval($opts['limit'] ?? env('ENDORSE_REFRESH_BATCH_SIZE', 40));
+        $limit = intval($opts['limit'] ?? env('ENDORSE_REFRESH_BATCH_SIZE', 200));
         if ($limit <= 0) {
-            $limit = 40;
+            $limit = 200;
         } elseif ($limit > 500) {
             $limit = 500;
         }
