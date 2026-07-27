@@ -55,4 +55,4 @@ Only `permanent` and `empty` are immediately terminal. Transport, configuration,
 4. Confirm stale processing rows are recycled after five minutes.
 5. Check the per-minute and daily caps in `.env`.
 
-Important defaults: batch `40`, forced batch `250`, parallel HTTP `10`, rate `250/min`, daily cap off, batch deadline `45s`, HTTP timeout `30s`.
+Important defaults: batch `200`, forced batch `250`, parallel HTTP `100` (maximum `200`), rate `250/min`, daily cap off, batch deadline `45s`, HTTP timeout `30s`. The rolling rate cap can reduce a later staggered worker below 200 claimed items.

@@ -322,7 +322,7 @@ It also:
 
 1. Marks stale processing attempts as `retrying`
 2. Resets stale queue rows back to `pending`
-3. Claims up to `BATCH_SIZE = 30` rows
+3. Claims up to `BATCH_SIZE = 200` rows, subject to rate caps
 4. Creates attempt audit rows
 5. Loads endorse rows and previous stats
 6. Fetches remote metrics
@@ -331,8 +331,8 @@ It also:
 
 Default worker constants:
 
-- `BATCH_SIZE = 30`
-- `PARALLEL_HTTP = 10`
+- `BATCH_SIZE = 200`
+- `PARALLEL_HTTP = 100` (maximum `200`)
 - stale threshold `5` minutes
 
 ## Database Requirements
@@ -548,8 +548,7 @@ For cloning the modern refresh button system, `endorse-refresh` is the key worke
 
 ## Known Caveats
 
-- `Template::get_social_media_batch()` is currently implemented as a serial loop even though comments describe parallel `curl_multi`.
-- Queue worker comments mention parallel HTTP concurrency, but the actual batch helper currently delegates to repeated `get_social_media()` calls.
+- `Template::get_social_media_batch()` uses parallel `curl_multi` for TikTok; Instagram and Threads still use their synchronous direct adapters.
 - `queue_count()` comments say “last 24h”, but the implementation returns all active `pending + processing` rows via `computeHealth()`.
 - `/endorse-campaign` `Refresh Semua` only acts on campaign cards currently rendered on the page.
 - Single-row `Refresh` still bypasses the queue and runs synchronously.
