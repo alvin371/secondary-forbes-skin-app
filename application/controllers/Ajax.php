@@ -121,6 +121,17 @@ class Ajax extends CI_Controller
 			]));
 	}
 
+	public function refresh_all_active_endorses()
+	{
+		$this->load->database();
+		$this->load->library('endorseRefreshQueueService');
+		$result = $this->endorserefreshqueueservice->enqueueAllActive(intval($_SESSION['user']['id'] ?? 0));
+
+		return $this->output
+			->set_content_type('application/json', 'utf-8')
+			->set_output(json_encode($result));
+	}
+
 	public function get_chart_campaign()
 	{
 		$is_dashboard = $_GET['is_dashboard'];
@@ -159,14 +170,31 @@ class Ajax extends CI_Controller
 		if (empty($start_date)) $start_date = date("Y-m-d", strtotime(date("Y-m-d") . " -31 days"));
 		if (empty($until_date)) $until_date = date("Y-m-d");
 
-		$qry_opt = " endorse_logs.date ";
-		$group   = " GROUP BY endorse_logs.date ";
+		$this->load->helper('env');
+		$useRollup = env('ENDORSE_ROLLUP_READ', '0') === '1';
+		$logDateColumn = $useRollup ? 'endorse_logs.log_date' : 'endorse_logs.date';
+		$qry_opt = " $logDateColumn ";
+		$group   = " GROUP BY $logDateColumn ";
 
 		// Detail campaign (opsional)
 		$detail = $this->mymodel->selectWithQuery("SELECT * FROM endorse_campaign WHERE id = '$id_campaign'");
 		$detail = $detail ? $detail[0] : null;
         $this->load->library('endorse_sync');
-        $canonicalLogs = $this->endorse_sync->canonical_logs_from('endorse_logs');
+        $canonicalLogs = $useRollup
+			? 'endorse_logs_daily_rollup endorse_logs'
+			: $this->endorse_sync->canonical_logs_from('endorse_logs');
+		$likesDeltaExpr = $useRollup
+			? 'endorse_logs.likes_delta'
+			: '(endorse_logs.likes_after - endorse_logs.likes_before)';
+		$commentDeltaExpr = $useRollup
+			? 'endorse_logs.comment_delta'
+			: '(endorse_logs.comment_after - endorse_logs.comment_before)';
+		$shareSaveDeltaExpr = $useRollup
+			? 'endorse_logs.share_save_delta'
+			: '(endorse_logs.share_save_after - endorse_logs.share_save_before)';
+		$viewsDeltaExpr = $useRollup
+			? 'endorse_logs.views_delta'
+			: '(endorse_logs.views_after - endorse_logs.views_before)';
 
         $keyword_category = $_GET['keyword_category'] ? $_GET['keyword_category'] : "Nama Creator";
         $keyword = $_GET['keyword'];
@@ -296,7 +324,7 @@ class Ajax extends CI_Controller
 			$filters_date_on_endorse .= " AND DATE(endorse.tgl_tf) >= '$start_date' AND DATE(endorse.tgl_tf) <= '$until_date' ";
 		}
 
-		$date_filter_for_logs = " AND endorse_logs.date >= '$start_date' AND endorse_logs.date <= '$until_date' ";
+		$date_filter_for_logs = " AND $logDateColumn >= '$start_date' AND $logDateColumn <= '$until_date' ";
 		$qry_common_for_logs = $filters_common . $filters_date_on_endorse . $date_filter_for_logs;
 
 		// ===== Query data endorse untuk summary & list ids =====
@@ -338,9 +366,9 @@ class Ajax extends CI_Controller
 		}
 		$log_campaign_filter = '';
 		if ($ids_campaign_list) {
-			$log_campaign_filter .= " AND endorse_logs.id_campaign IN ($ids_campaign_list) ";
+			$log_campaign_filter .= " AND endorse.id_campaign IN ($ids_campaign_list) ";
 		} else if ($is_dashboard != 'true' && $id_campaign) {
-			$log_campaign_filter .= " AND endorse_logs.id_campaign = '$id_campaign' ";
+			$log_campaign_filter .= " AND endorse.id_campaign = '$id_campaign' ";
 		}
 		$log_join_campaign = '';
 		if ($need_join_campaign) {
@@ -372,12 +400,12 @@ class Ajax extends CI_Controller
             if ($is_dashboard != 'true') {
                 $sql_list = "
                     SELECT
-                        SUM(endorse_logs.likes_after   - endorse_logs.likes_before)       AS likes,
-                        SUM(endorse_logs.comment_after - endorse_logs.comment_before)     AS comment,
-                        SUM(endorse_logs.share_save_after - endorse_logs.share_save_before) AS share_save,
-                        SUM(endorse_logs.views_after   - endorse_logs.views_before)       AS views,
+                        SUM($likesDeltaExpr)                                             AS likes,
+                        SUM($commentDeltaExpr)                                           AS comment,
+                        SUM($shareSaveDeltaExpr)                                         AS share_save,
+                        SUM($viewsDeltaExpr)                                             AS views,
                         SUM(endorse_logs.total_cost)                                      AS cost,
-                        COUNT(endorse_logs.id)                                            AS endorse,
+                        COUNT(endorse_logs.id_endorse)                                    AS endorse,
                         $qry_opt                                                           AS opt
                     FROM {$canonicalLogs}
                     INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
@@ -387,17 +415,17 @@ class Ajax extends CI_Controller
                     $qry_list
                     $qry_common_for_logs
                     $group
-                    ORDER BY endorse_logs.date ASC
+                    ORDER BY $logDateColumn ASC
                 ";
             } else {
                 $sql_list = "
                     SELECT
-                        SUM(endorse_logs.likes_after   - endorse_logs.likes_before)       AS likes,
-                        SUM(endorse_logs.comment_after - endorse_logs.comment_before)     AS comment,
-                        SUM(endorse_logs.share_save_after - endorse_logs.share_save_before) AS share_save,
-                        SUM(endorse_logs.views_after   - endorse_logs.views_before)       AS views,
+                        SUM($likesDeltaExpr)                                             AS likes,
+                        SUM($commentDeltaExpr)                                           AS comment,
+                        SUM($shareSaveDeltaExpr)                                         AS share_save,
+                        SUM($viewsDeltaExpr)                                             AS views,
                         SUM(endorse_logs.total_cost)                                      AS cost,
-                        COUNT(endorse_logs.id)                                            AS endorse,
+                        COUNT(endorse_logs.id_endorse)                                    AS endorse,
                         $qry_opt                                                           AS opt
                     FROM {$canonicalLogs}
                     INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
@@ -407,7 +435,7 @@ class Ajax extends CI_Controller
                     $qry_list
                     $qry_common_for_logs
                     $group
-                    ORDER BY endorse_logs.date ASC
+                    ORDER BY $logDateColumn ASC
                 ";
             }
         } else {
@@ -419,7 +447,7 @@ class Ajax extends CI_Controller
                         SUM(endorse_logs.share_save_after)   AS share_save,
                         SUM(endorse_logs.views_after)        AS views,
                         SUM(endorse_logs.total_cost)         AS cost,
-                        COUNT(endorse_logs.id)               AS endorse,
+                        COUNT(endorse_logs.id_endorse)       AS endorse,
                         $qry_opt                              AS opt
                     FROM {$canonicalLogs}
                     INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
@@ -429,7 +457,7 @@ class Ajax extends CI_Controller
                     $qry_list
                     $qry_common_for_logs
                     $group
-                    ORDER BY endorse_logs.date ASC
+                    ORDER BY $logDateColumn ASC
                 ";
             } else {
                 $sql_list = "
@@ -439,7 +467,7 @@ class Ajax extends CI_Controller
                         SUM(endorse_logs.share_save_after)   AS share_save,
                         SUM(endorse_logs.views_after)        AS views,
                         SUM(endorse_logs.total_cost)         AS cost,
-                        COUNT(endorse_logs.id)               AS endorse,
+                        COUNT(endorse_logs.id_endorse)       AS endorse,
                         $qry_opt                              AS opt
                     FROM {$canonicalLogs}
                     INNER JOIN endorse ON endorse.id = endorse_logs.id_endorse
@@ -449,7 +477,7 @@ class Ajax extends CI_Controller
                     $qry_list
                     $qry_common_for_logs
                     $group
-                    ORDER BY endorse_logs.date ASC
+                    ORDER BY $logDateColumn ASC
                 ";
             }
         }
@@ -647,14 +675,13 @@ class Ajax extends CI_Controller
 				$cpm  = ($views > 0) ? ($cost / $views) * 1000 : 0;
 
 			} else {
-				// Mode selisih (D-1)
-				$ref = $arr_new[$last_nonempty_idx];
-				$views       = (float)$ref['val_1'] - (float)$baseline_views;
-				$engagement  = (float)$ref['val_3'] - (float)$baseline_eng;
-				$endorse_cnt = (float)$ref['val_5'] - (float)$baseline_end;
-				$likes       = (float)$ref['val_likes'] - (float)$baseline_likes;
-				$comment     = (float)$ref['val_comment'] - (float)$baseline_comment;
-				$share_save  = (float)$ref['val_share_save'] - (float)$baseline_share_save;
+				// Mode selisih: jumlahkan delta harian dalam rentang terpilih.
+				$views       = $sum_delta_views;
+				$engagement  = $sum_delta_eng;
+				$endorse_cnt = $sum_delta_end;
+				$likes       = $sum_delta_likes;
+				$comment     = $sum_delta_comment;
+				$share_save  = $sum_delta_share_save;
 
 				// === NEW: pada mode selisih, summary cost tetap total dari endorse
 				$cost = $total_cost_from_endorse;

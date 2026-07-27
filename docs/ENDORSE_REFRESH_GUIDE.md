@@ -1,6 +1,6 @@
 # Endorse Refresh Guide
 
-This is the canonical implementation guide for the endorse refresh system.
+This is the operator-facing implementation guide for the endorse refresh system. The precise source/port contract is [tiktok-sync-source-reference.md](tiktok-sync-source-reference.md).
 
 It documents the current behavior exactly as implemented in this repo so the same pattern can be cloned into another CodeIgniter project with minimal guesswork.
 
@@ -58,15 +58,14 @@ Entry UI:
 - [application/views/endorse_campaign/all.php](/Users/alvin/Documents/WorkingSpace/acneno-hrms/htdocs/forbes-skin-app/application/views/endorse_campaign/all.php:71)
 - JS handler in [application/views/endorse_campaign/all.php](/Users/alvin/Documents/WorkingSpace/acneno-hrms/htdocs/forbes-skin-app/application/views/endorse_campaign/all.php:183)
 
-Request pattern:
+Request:
 
-- loops visible campaign cards
-- calls `GET /ajax/refresh-campaign-endorses?id_campaign={campaign_id}` once per rendered card
+- `GET /ajax/refresh-all-active-endorses`
 
 Behavior:
 
-- Bulk enqueue at the browser layer, not a dedicated backend batch route
-- Only campaigns currently rendered on the page are included
+- One backend request calls `EndorseRefreshQueueService::enqueueAllActive()`
+- Includes active posts across all active campaigns, not only rendered cards
 
 ### `/endorse?id_campaign=...` page button: `Refresh Semua`
 
@@ -175,6 +174,8 @@ Behavior:
 ### Queue control routes
 
 - `POST /endorse/force-retry` -> clone failed rows back into pending queue
+- `POST /endorse/run-worker` -> run one forced inline worker batch
+- `POST /endorse/reset-stuck` -> return processing rows older than five minutes to pending
 - `POST /endorse/clear-queue` -> clear queue and attempt history
 
 ### Worker route

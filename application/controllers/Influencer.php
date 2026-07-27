@@ -672,161 +672,157 @@ class Influencer extends BaseController
 
     public function sync_process()
     {
-        $user = $_SESSION['user'];
-        $id = $_POST['id'];
+        $userId = intval($_SESSION['user']['id'] ?? 0);
+        $id = intval($_POST['id'] ?? 0);
+        $rows = $this->mymodel->selectWithQuery("SELECT * FROM influencer WHERE id = '$id' LIMIT 1");
+        $influencer = $rows[0] ?? [];
 
-        $query = $this->mymodel->selectWithQuery("SELECT * FROM influencer WHERE id = '$id'");
-        $query = $query[0];
-
-        if ($query['status'] == "Tidak Aktif") {
-            $msg = "Pastikan status influencer Aktif!";
-            echo $this->template->alert_danger($msg);
-            die;
+        if (empty($influencer)) {
+            echo $this->template->alert_danger('Data influencer tidak ditemukan.');
+            return;
+        }
+        if (($influencer['status'] ?? '') !== 'Aktif') {
+            echo $this->template->alert_danger('Pastikan status influencer aktif.');
+            return;
         }
 
-        // Phase 1: Update internal metrics from endorse (always synchronous)
-        $endorse = $this->mymodel->selectWithQuery("SELECT COUNT(id) as frequency, SUM(total_cost) as total_cost, SUM(views) as views, 
-        AVG(views) as avg_views, 
-        AVG(likes+comment+share_save) as avg_interaksi, 
-        SUM(likes) as likes,
-        SUM(share_save) as share,
-        SUM(comment) as comment
-        FROM endorse WHERE influencer = '$id'
-        AND link_upload != ''
+        $aggregateRows = $this->mymodel->selectWithQuery("
+            SELECT COUNT(id) AS frequency,
+                   COALESCE(SUM(total_cost), 0) AS total_cost,
+                   COALESCE(SUM(views), 0) AS views,
+                   COALESCE(AVG(views), 0) AS avg_views,
+                   COALESCE(AVG(likes + comment + share_save), 0) AS avg_interaksi,
+                   COALESCE(SUM(likes), 0) AS likes,
+                   COALESCE(SUM(share_save), 0) AS share,
+                   COALESCE(SUM(comment), 0) AS comment
+            FROM endorse
+            WHERE influencer = '$id' AND link_upload != ''
         ");
-        $endorse = $endorse[0];
+        $aggregate = $aggregateRows[0] ?? [];
+        $views = intval($aggregate['views'] ?? 0);
+        $totalCost = floatval($aggregate['total_cost'] ?? 0);
+        $now = date('Y-m-d H:i:s');
+        $internalUpdate = [
+            'sync_at' => $now,
+            'frequency' => intval($aggregate['frequency'] ?? 0),
+            'total_cost' => $totalCost,
+            'view' => $views,
+            'like' => intval($aggregate['likes'] ?? 0),
+            'comment' => intval($aggregate['comment'] ?? 0),
+            'collect' => 0,
+            'share' => intval($aggregate['share'] ?? 0),
+            'avg_view' => floatval($aggregate['avg_views'] ?? 0),
+            'avg_interaksi' => floatval($aggregate['avg_interaksi'] ?? 0),
+            'cpm' => ($totalCost > 0 && $views > 0) ? ($totalCost / $views * 1000) : 0,
+            'updated_at' => $now,
+        ];
+        if ($userId > 0) {
+            $internalUpdate['updated_by'] = strval($userId);
+        }
+        $this->db->update('influencer', $internalUpdate, ['id' => $id]);
 
-        $dt = array();
-        $dt['sync_at'] = DATE("Y-m-d H:i:s");
-        $dt['frequency'] = $endorse['frequency'];
-        $dt['total_cost'] = $endorse['total_cost'];
-        $dt['view'] = $endorse['views'];
-        $dt['like'] = $endorse['likes'];
-        $dt['comment'] = $endorse['comment'];
-        $dt['collect'] = $endorse['collect'];
-        $dt['share'] = $endorse['share'];
-        $dt['avg_view'] = $endorse['avg_views'];
-        $dt['avg_interaksi'] = $endorse['avg_interaksi'];
-        if ($endorse['total_cost'] > 0 && $endorse['views'] > 0) {
-            $dt['cpm'] = $endorse['total_cost'] / $endorse['views'] * 1000;
-        } else {
-            $dt['cpm'] = 0;
+        $type = strval($influencer['type'] ?? '');
+        if ($type === 'Tiktok') {
+            $result = $this->template->syncTiktokProfile('influencer', $id, $type, strval($influencer['url'] ?? ''));
+            echo !empty($result['status'])
+                ? $this->template->alert_success('Refresh data berhasil!')
+                : $this->template->alert_danger($result['msg'] ?? 'Gagal mengambil profil TikTok.');
+            return;
         }
 
-        $this->db->update('influencer', $dt, array('id' => $id));
+        if ($type === 'Instagram') {
+            $profile = $this->template->get_account_id($type, strval($influencer['url'] ?? ''));
+        } elseif ($type === 'Threads') {
+            $profile = $this->template->get_threads_account($id, strval($influencer['url'] ?? ''));
+        } else {
+            echo $this->template->alert_danger('Platform belum didukung untuk sync eksternal.');
+            return;
+        }
 
-        // Phase 2: External scrape - bifurcate by platform
-        if ($query['type'] == 'Instagram') {
-            // Instagram: Async via ScrapingBot queue
-            $result = $this->template->enqueue_scrape('influencer', $id, $query['type'], $query['url'], 10);
-            if ($result['status']) {
-                $msg = "Data internal berhasil diperbarui. Data eksternal sedang diproses, akan diperbarui dalam beberapa menit.";
-                echo $this->template->alert_success($msg);
-            } else {
-                $msg = "Data internal berhasil diperbarui, namun gagal menambahkan ke antrian scraping: " . $result['msg'];
-                echo $this->template->alert_warning($msg);
+        if (empty($profile['status'])) {
+            echo $this->template->alert_danger($profile['msg'] ?? 'Gagal mengambil profil.');
+            return;
+        }
+
+        $profileData = $profile['data'] ?? [];
+        $profileUpdate = [
+            'account_id' => strval($profileData['account_id'] ?? ''),
+            'img' => strval($profileData['img'] ?? ''),
+            'follower' => intval($profileData['follower'] ?? 0),
+            'media_count' => intval($profileData['media_count'] ?? 0),
+            'updated_at' => $now,
+        ];
+        if ($userId > 0) {
+            $profileUpdate['updated_by'] = strval($userId);
+        }
+        $this->db->update('influencer', $profileUpdate, ['id' => $id]);
+
+        $posts = $type === 'Threads'
+            ? $this->template->get_threads_post_list($id)
+            : $this->template->get_post_list($type, strval($profileData['account_id'] ?? ''));
+        if (empty($posts['status'])) {
+            echo $this->template->alert_danger($posts['msg'] ?? 'Gagal mengambil daftar post.');
+            return;
+        }
+
+        $totals = ['like' => 0, 'comment' => 0, 'collect' => 0, 'share' => 0, 'view' => 0];
+        $items = array_slice(is_array($posts['data'] ?? null) ? $posts['data'] : [], 0, 10);
+        foreach ($items as $post) {
+            foreach ($totals as $metric => $unused) {
+                $totals[$metric] += intval($post[$metric] ?? 0);
             }
-            die;
         }
 
-        // TikTok: Synchronous via RapidAPI (existing logic)
-        $url = $query['url'];
-
-        $response = $this->template->get_account_id($query['type'], $query['url']);
-        if ($response['status'] == false) {
-            $msg = $response['msg'];
-            echo $this->template->alert_danger($msg);
-            die;
+        $count = count($items);
+        $avgView = $count > 0 ? $totals['view'] / $count : 0;
+        $avgInteraction = $count > 0
+            ? ($totals['like'] + $totals['comment'] + $totals['collect'] + $totals['share']) / $count
+            : 0;
+        $er = $avgView > 0 ? ($avgInteraction / $avgView * 100) : 0;
+        $ratecard = floatval($influencer['ratecard'] ?? 0);
+        $metricUpdate = [
+            'sync_at' => $now,
+            'frequency_2' => $count,
+            'view_2' => $totals['view'],
+            'like_2' => $totals['like'],
+            'collect_2' => $totals['collect'],
+            'share_2' => $totals['share'],
+            'comment_2' => $totals['comment'],
+            'avg_view_2' => $avgView,
+            'avg_interaksi_2' => $avgInteraction,
+            'er' => $er,
+            'cpm_2' => ($ratecard > 0 && $avgView > 0) ? ($ratecard / $avgView * 1000) : 0,
+            'updated_at' => $now,
+        ];
+        if ($userId > 0) {
+            $metricUpdate['updated_by'] = strval($userId);
         }
+        $this->db->update('influencer', $metricUpdate, ['id' => $id]);
 
-        $dt['updated_at'] = DATE("Y-m-d H:i:s");
-        $dt['updated_by'] = strval($user['id']);
-        $dt['account_id'] = $response['data']['account_id'];
-        $dt['img'] = $response['data']['img'];
-        $dt['follower'] = $response['data']['follower'];
-        $dt['media_count'] = $response['data']['media_count'];
-        $this->db->update('influencer', $dt, array('id' => $id));
-
-        $post_account = $query['type'] === 'Tiktok' ? ($response['data']['username'] ?? '') : ($response['data']['account_id'] ?? '');
-        $response = $this->template->get_post_list($query['type'], $post_account);
-
-        if ($response['status'] == false) {
-            $msg = $response['msg'];
-            echo $this->template->alert_danger($msg);
-            die;
-        }
-
-        $dt = array();
-        $dt['updated_at'] = DATE("Y-m-d H:i:s");
-        $dt['updated_by'] = strval($user['id']);
-        $dt['like'] = 0;
-        $dt['comment'] = 0;
-        $dt['collect'] = 0;
-        $dt['share'] = 0;
-        $dt['view'] = 0;
-        $i = 0;
-        foreach ($response['data'] as $k => $v) {
-            $dt['like'] += $v['like'];
-            $dt['comment'] += $v['comment'];
-            $dt['collect'] += $v['collect'];
-            $dt['share'] += $v['share'];
-            $dt['view'] += $v['view'];
-            if ($i >= 10) {
-                break;
-            }
-            $i++;
-        }
-
-        if ($dt['view'] > 0) {
-            $dt['avg_view'] = $dt['view'] / $i;
-        }
-        if (($dt['like'] + $dt['comment'] + $dt['collect'] + $dt['share'])  > 0) {
-            $dt['avg_interaksi'] = ($dt['like'] + $dt['comment'] + $dt['collect'] + $dt['share']) / $i;
-        }
-        if ($dt['view'] > 0 && $dt['avg_interaksi'] > 0) {
-            $dt['er'] = $dt['avg_interaksi'] / $dt['avg_view'] * 100;
-        }
-        $dt['sync_at'] = DATE("Y-m-d H:i:s");
-
-        $today = DATE("Y-m-d");
-        $logs = $this->mymodel->selectWithQuery("SELECT id FROM influencer_logs WHERE id_influencer = '$id' AND DATE(date) = '$today' ");
-        $logs = $logs[0];
-        if ($logs) {
-            $dt['updated_at'] = DATE("Y-m-d H:i:s");
-            $this->db->update('influencer_logs', $dt, array('id' => $logs['id']));
+        $today = date('Y-m-d');
+        $logRows = $this->mymodel->selectWithQuery("
+            SELECT id FROM influencer_logs
+            WHERE id_influencer = '$id' AND DATE(date) = '$today'
+            ORDER BY id DESC LIMIT 1
+        ");
+        $logData = array_merge($totals, [
+            'avg_view' => $avgView,
+            'avg_interaksi' => $avgInteraction,
+            'er' => $er,
+            'sync_at' => $now,
+        ]);
+        if (!empty($logRows)) {
+            $logData['updated_at'] = $now;
+            $this->db->update('influencer_logs', $logData, ['id' => intval($logRows[0]['id'])]);
         } else {
-            $dt['id_influencer'] = $id;
-            $dt['date'] = $today;
-            $dt['status'] = "Aktif";
-            $dt['created_at'] = DATE("Y-m-d H:i:s");
-            $this->db->insert('influencer_logs', $dt);
+            $logData['id_influencer'] = $id;
+            $logData['date'] = $today;
+            $logData['status'] = 'Aktif';
+            $logData['created_at'] = $now;
+            $this->db->insert('influencer_logs', $logData);
         }
 
-        $dt_2 = array();
-        $dt_2['sync_at'] = $dt['sync_at'];
-        $dt_2['frequency_2'] = $i;
-        $dt_2['er'] = $dt['er'];
-        $dt_2['updated_at'] = DATE("Y-m-d H:i:s");
-        $dt_2['updated_by'] = strval($user['id']);
-        $dt_2['view_2'] = $dt['view'];
-        $dt_2['like_2'] = $dt['like'];
-        $dt_2['collect_2'] = $dt['collect'];
-        $dt_2['share_2'] = $dt['share'];
-        $dt_2['comment_2'] = $dt['comment'];
-        $dt_2['avg_view_2'] = $dt['view'] / $i;
-        $dt_2['avg_interaksi_2'] = ($dt['like'] + $dt['comment'] + $dt['collect'] + $dt['share']) / $i;
-
-        if ($query['ratecard'] > 0 && $dt['view'] > 0) {
-            $dt_2['cpm_2'] = $query['ratecard'] / $dt_2['avg_view_2'] * 1000;
-        } else {
-            $dt_2['cpm_2'] = 0;
-        }
-
-        $this->db->update('influencer', $dt_2, array('id' => $id));
-
-        $msg = "Refresh data berhasil!";
-        echo $this->template->alert_success($msg);
-        die;
+        echo $this->template->alert_success('Refresh data berhasil!');
     }
 
     public function remove()
@@ -1221,7 +1217,7 @@ class Influencer extends BaseController
                     continue;
                 }
 
-                $account_response = $this->template->get_account_id($vl['type'], $vl['url'], $api_timeout);
+                $account_response = $this->template->get_account_id($vl['type'], $vl['url']);
                 if (!$account_response['status']) {
                     $errors[] = "ID $id: " . ($account_response['msg'] ?? 'Gagal mengambil account id.');
                     $processed++;
@@ -1242,7 +1238,7 @@ class Influencer extends BaseController
                 $this->db->update('influencer', $profile_update, ['id' => $id]);
 
                 $post_account = $vl['type'] === 'Tiktok' ? strval($account_data['username'] ?? '') : $profile_update['account_id'];
-                $post_response = $this->template->get_post_list($vl['type'], $post_account, $api_timeout);
+                $post_response = $this->template->get_post_list($vl['type'], $post_account);
                 if (!$post_response['status']) {
                     $errors[] = "ID $id: " . ($post_response['msg'] ?? 'Gagal mengambil daftar post.');
                     $processed++;

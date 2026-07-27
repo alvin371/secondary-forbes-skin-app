@@ -14,9 +14,21 @@ class Endorse_sync
     const ERR_PERMANENT = 'permanent';
     const ERR_TRANSIENT = 'transient';
     const ERR_EMPTY     = 'empty';
+    const ERR_INFRA     = 'infra';
+    const ERR_INFRA_DNS = 'infra_dns';
+    const ERR_INFRA_CONNECT = 'infra_connect';
+    const ERR_INFRA_TLS = 'infra_tls';
+    const ERR_INFRA_STALL = 'infra_stall';
+    const ERR_CONFIG    = 'config';
 
     /** @var CI_Controller */
     protected $CI;
+
+    public static function is_terminal_class(string $errorClass): bool
+    {
+        return $errorClass === self::ERR_PERMANENT
+            || $errorClass === self::ERR_EMPTY;
+    }
 
     public function __construct()
     {
@@ -62,10 +74,22 @@ class Endorse_sync
         }
 
         $msg = strval($response['msg'] ?? '');
+        $machineClass = strval($response['error_class'] ?? '');
 
-        if ($platform === 'Instagram') {
-            return ['class' => self::ERR_PERMANENT, 'msg' => $msg ?: 'Individual Instagram post scraping belum tersedia'];
+        if (in_array($machineClass, [
+            self::ERR_INFRA,
+            self::ERR_INFRA_DNS,
+            self::ERR_INFRA_CONNECT,
+            self::ERR_INFRA_TLS,
+            self::ERR_INFRA_STALL,
+            self::ERR_CONFIG,
+            self::ERR_PERMANENT,
+            self::ERR_EMPTY,
+            self::ERR_TRANSIENT,
+        ], true)) {
+            return ['class' => $machineClass, 'msg' => $msg ?: 'Gagal mengambil data sosial media'];
         }
+
 
         if (stripos($msg, 'video id tidak ditemukan') !== false
             || stripos($msg, 'url tidak ditemukan') !== false
@@ -134,7 +158,10 @@ class Endorse_sync
         $prev_likes      = intval($prev_stats['likes_after'] ?? 0);
         $prev_comment    = intval($prev_stats['comment_after'] ?? 0);
         $prev_share_save = intval($prev_stats['share_save_after'] ?? 0);
-        $prev_views      = intval($prev_stats['views_after'] ?? 0);
+        $prev_views      = max(
+            intval($prev_stats['views_after'] ?? 0),
+            intval($endorse['views'] ?? 0)
+        );
 
         $stats = [
             'likes'      => intval($response['data']['like'] ?? 0),
@@ -250,6 +277,118 @@ class Endorse_sync
             'error_class' => self::ERR_OK,
             'msg'         => 'OK',
         ];
+    }
+
+    public function apply_snapshot(array $endorse, array $response, string $purpose, int $user_id): array
+    {
+        $platform = strval($endorse['platform']);
+        $url = strval($endorse['link_upload']);
+        $purpose = ($purpose === 'final') ? 'final' : 'initial';
+
+        $classification = $this->classify_response($response, $platform, $url);
+        if ($classification['class'] !== self::ERR_OK) {
+            return [
+                'status'      => false,
+                'error_class' => $classification['class'],
+                'msg'         => $classification['msg'],
+            ];
+        }
+
+        $db = $this->CI->db;
+        $id_endorse = intval($endorse['id']);
+        $now = date('Y-m-d H:i:s');
+
+        // NOTE: the API exposes "save" under the key `collect`.
+        $metrics = [
+            'like'    => intval($response['data']['like'] ?? 0),
+            'comment' => intval($response['data']['comment'] ?? 0),
+            'share'   => intval($response['data']['share'] ?? 0),
+            'save'    => intval($response['data']['collect'] ?? 0),
+            'view'    => intval($response['data']['view'] ?? 0),
+        ];
+
+        $update = [
+            'updated_at' => $now,
+            'updated_by' => strval($user_id),
+        ];
+
+        if ($purpose === 'initial') {
+            // Baseline must stay frozen — never overwrite once captured.
+            if (!empty($endorse['initial_fetched_at'])) {
+                return [
+                    'status'      => true,
+                    'error_class' => self::ERR_OK,
+                    'msg'         => 'Initial baseline already captured',
+                ];
+            }
+            $update['like_initial']       = $metrics['like'];
+            $update['comment_initial']    = $metrics['comment'];
+            $update['share_initial']      = $metrics['share'];
+            $update['save_initial']       = $metrics['save'];
+            $update['view_initial']       = $metrics['view'];
+            $update['initial_fetched_at'] = $now;
+        } else {
+            $update['like_final']      = $metrics['like'];
+            $update['comment_final']   = $metrics['comment'];
+            $update['share_final']     = $metrics['share'];
+            $update['save_final']      = $metrics['save'];
+            $update['view_final']      = $metrics['view'];
+            $update['final_fetched_at'] = $now;
+
+            // Growth = final - initial (initial defaults to 0 if never captured).
+            $growthRow = [];
+            foreach (['like', 'comment', 'share', 'save', 'view'] as $m) {
+                $growthRow[$m . '_initial'] = $endorse[$m . '_initial'] ?? 0;
+                $growthRow[$m . '_final']   = $metrics[$m];
+            }
+            foreach ($this->compute_growth($growthRow) as $k => $v) {
+                $update[$k] = $v;
+            }
+        }
+
+        // Capture TikTok thumbnail/content id for parity with the daily sync (optional).
+        if ($platform === 'Tiktok' && $db->field_exists('tiktok_content_id', 'endorse')) {
+            if (!empty($response['data']['content_id'])) {
+                $update['tiktok_content_id'] = strval($response['data']['content_id']);
+            }
+            if (!empty($response['data']['media_type'])) {
+                $update['tiktok_media_type'] = strval($response['data']['media_type']);
+            }
+            if (!empty($response['data']['cover'])) {
+                $update['tiktok_cover'] = strval($response['data']['cover']);
+            }
+        }
+
+        $db->update('endorse', $update, ['id' => $id_endorse]);
+
+        return [
+            'status'      => true,
+            'error_class' => self::ERR_OK,
+            'msg'         => 'OK',
+        ];
+    }
+
+    /**
+     * Compute growth = final - initial for the five optimization metrics.
+     * Shared by apply_snapshot('final') and the manual-entry save path for
+     * placeholder platforms. Returns null growth when either side is missing.
+     *
+     * @param array $row Row carrying *_initial and *_final keys.
+     * @return array ['like_growth' => int|null, 'comment_growth' => ..., ...]
+     */
+    public function compute_growth(array $row): array
+    {
+        $out = [];
+        foreach (['like', 'comment', 'share', 'save', 'view'] as $m) {
+            $initial = $row[$m . '_initial'] ?? null;
+            $final   = $row[$m . '_final'] ?? null;
+            if ($initial === null || $initial === '' || $final === null || $final === '') {
+                $out[$m . '_growth'] = null;
+            } else {
+                $out[$m . '_growth'] = intval($final) - intval($initial);
+            }
+        }
+        return $out;
     }
 
     protected function looks_like_url(string $value): bool

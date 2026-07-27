@@ -67,7 +67,7 @@
                         <button class="btn btn-edit-active" type="submit"><i class="bi bi-search fs-16"></i> Cari Data</button>
                     </div>
                     <div class="col-lg-2 text-end">
-                        <a href="#!" onclick="refreshVisibleCampaigns()" class="btn btn-sync px-2 mt-0 me-1"><i class="bi bi-bootstrap-reboot fs-16"></i> Refresh Semua</a>
+                        <a href="#!" id="refresh-all-btn" onclick="refreshAllCampaigns()" class="btn btn-sync px-2 mt-0 me-1"><i class="bi bi-bootstrap-reboot fs-16"></i> Refresh Semua</a>
                         <a href="#!" onclick="create()" class="btn btn-primary px-2 mt-0 ms-1"><i class="bi bi-plus-circle-dotted fs-16"></i> Tambah Data</a>
                     </div>
 
@@ -121,25 +121,30 @@
         });
     }
 
-    function refreshVisibleCampaigns() {
-        var buttons = document.querySelectorAll('[id^="refresh-btn-"]');
-        if (!buttons.length) return;
-        if (!confirm('Antrikan refresh untuk ' + buttons.length + ' campaign? Proses asinkron, pantau di icon antrian.')) return;
-        var totalEnqueued = 0, totalSkipped = 0, done = 0;
-        buttons.forEach(function(btn) {
-            var id = btn.id.replace('refresh-btn-', '');
-            $.get('<?= base_url() ?>ajax/refresh-campaign-endorses', { id_campaign: id }, function(res) {
-                if (res && res.status) {
-                    totalEnqueued += parseInt(res.enqueued || 0);
-                    totalSkipped  += parseInt(res.skipped_duplicates || 0);
-                }
-                done++;
-                if (done === buttons.length) {
-                    var msg = 'Antrian dibuat: ' + totalEnqueued + ' baru, ' + totalSkipped + ' sudah ada. ' +
-                        '<a href="<?= base_url() ?>endorse/queue"><b>Lihat antrian →</b></a>';
-                    showCampaignToast(msg, 'success');
-                }
-            }, 'json');
+    function refreshAllCampaigns() {
+        if (!confirm('Antrikan refresh untuk seluruh konten aktif di semua campaign aktif?')) return;
+        var btn = document.getElementById('refresh-all-btn');
+        var original = btn.innerHTML;
+        btn.classList.add('disabled');
+        btn.setAttribute('aria-disabled', 'true');
+        btn.innerHTML = '<i class="bi bi-hourglass-split fs-16"></i> Mengantrikan...';
+
+        $.get('<?= base_url() ?>ajax/refresh-all-active-endorses', function(res) {
+            if (res && res.status) {
+                var msg = (res.msg || 'Antrian refresh dibuat.') + ' ' +
+                    (parseInt(res.enqueued || 0)) + ' baru, ' +
+                    (parseInt(res.skipped_duplicates || 0)) + ' sudah ada. ' +
+                    '<a href="<?= base_url() ?>endorse/queue"><b>Lihat antrian →</b></a>';
+                showCampaignToast(msg, 'success');
+            } else {
+                showCampaignToast((res && res.msg) || 'Gagal membuat antrian refresh.', 'error');
+            }
+        }, 'json').fail(function() {
+            showCampaignToast('Gagal membuat antrian refresh.', 'error');
+        }).always(function() {
+            btn.classList.remove('disabled');
+            btn.removeAttribute('aria-disabled');
+            btn.innerHTML = original;
         });
     }
 
