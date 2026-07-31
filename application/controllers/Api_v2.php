@@ -241,10 +241,31 @@ class Api_v2 extends CI_Controller
         return true;
     }
 
+    /**
+     * Prevent overlapping HTTP cron requests. Advisory locks are released by MySQL
+     * when the request connection closes, including when the process exits early.
+     */
+    private function acquire_cron_lock(string $name): bool
+    {
+        $result = $this->db->query('SELECT GET_LOCK(?, 0) AS acquired', [$name]);
+        $row = $result ? $result->row_array() : [];
+        return intval($row['acquired'] ?? 0) === 1;
+    }
+
     public function cronjob_endorse_refresh()
     {
         header('Content-Type: application/json; charset=utf-8');
         @set_time_limit(55);
+
+        if (!$this->acquire_cron_lock('endorse_refresh_worker')) {
+            http_response_code(429);
+            echo json_encode([
+                'status' => true,
+                'processed' => 0,
+                'msg' => 'Endorse refresh worker is already running.',
+            ]);
+            die;
+        }
 
         $this->load->model('mymodel');
         $this->load->library('template');
@@ -263,12 +284,13 @@ class Api_v2 extends CI_Controller
             die;
         }
 
-        $parallel = intval(env('ENDORSE_REFRESH_PARALLEL_HTTP', 100));
-        $parallel = max(1, min(200, $parallel));
+        $parallel = intval(env('ENDORSE_REFRESH_PARALLEL_HTTP', 10));
+        $parallel = max(1, min(20, $parallel));
         $deadline = floatval(env('ENDORSE_REFRESH_DEADLINE_SEC', 45));
         $limit = $force
-            ? intval(env('ENDORSE_REFRESH_FORCE_BATCH', 250))
-            : intval(env('ENDORSE_REFRESH_BATCH_SIZE', 200));
+            ? intval(env('ENDORSE_REFRESH_FORCE_BATCH', 50))
+            : intval(env('ENDORSE_REFRESH_BATCH_SIZE', 40));
+        $limit = max(1, min(50, $limit));
 
         $claim = $this->endorserefreshqueueservice->claimBatch([
             'limit' => $limit,
@@ -4903,6 +4925,13 @@ class Api_v2 extends CI_Controller
 
     function cronjob_endorse()
     {
+        if (!$this->acquire_cron_lock('endorse_daily_enqueue')) {
+            header('Content-Type: application/json; charset=utf-8');
+            http_response_code(429);
+            echo json_encode(['status' => true, 'data' => [], 'msg' => 'Endorse daily enqueue is already running.']);
+            die;
+        }
+
         $mode = strval($_GET['mode']);
         $target = DATE("Y-m-d 11:00:00");
         $now = DATE("Y-m-d H:i:s");
@@ -4977,6 +5006,12 @@ class Api_v2 extends CI_Controller
     {
         date_default_timezone_set('Asia/Jakarta');
         header('Content-Type: application/json; charset=utf-8');
+
+        if (!$this->acquire_cron_lock('endorse_campaign_cron')) {
+            http_response_code(429);
+            echo json_encode(['status' => true, 'data' => [], 'msg' => 'Endorse campaign cronjob is already running.']);
+            die;
+        }
 
         $mode = strval($this->input->get('mode'));
         $target = date('Y-m-d 11:00:00');

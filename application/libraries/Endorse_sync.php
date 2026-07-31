@@ -408,13 +408,12 @@ class Endorse_sync
         }
 
         $idList = implode(',', $endorse_ids);
-        $canonicalLogs = $this->canonical_logs_from('t');
         $rows = $this->CI->mymodel->selectWithQuery("
             SELECT t.id_endorse, t.likes_after, t.comment_after, t.share_save_after, t.views_after
-            FROM {$canonicalLogs}
+            FROM endorse_logs t
             INNER JOIN (
                 SELECT id_endorse, MAX(date) AS max_date
-                FROM {$canonicalLogs}
+                FROM endorse_logs
                 WHERE id_endorse IN ($idList)
                   AND date < '$today'
                   AND views_after > 0
@@ -436,8 +435,15 @@ class Endorse_sync
     public function update_campaign_parent(int $id_campaign, int $user_id): void
     {
         $db = $this->CI->db;
+        $lockName = 'endorse_campaign_rollup_' . $id_campaign;
+        $lock = $db->query('SELECT GET_LOCK(?, 0) AS acquired', [$lockName])->row_array();
+        if (intval($lock['acquired'] ?? 0) !== 1) {
+            log_message('info', "Skipped concurrent endorse campaign rollup for campaign {$id_campaign}.");
+            return;
+        }
+
+        try {
         $today = date('Y-m-d');
-        $canonicalLogs = $this->canonical_logs_from('endorse_logs');
 
         $existing = $this->CI->mymodel->selectWithQuery("
             SELECT id FROM endorse_campaign_logs
@@ -470,7 +476,7 @@ class Endorse_sync
                    SUM(likes_before) as likes_before, SUM(comment_before) as comment_before,
                    SUM(share_save_before) as share_save_before, SUM(views_before) as views_before,
                    AVG(cpm_before) as cpm_before
-            FROM {$canonicalLogs}
+            FROM endorse_logs
             WHERE id_campaign = '$id_campaign'
         ");
         $logTotals = $logTotals[0];
@@ -539,14 +545,18 @@ class Endorse_sync
             'updated_by'                 => strval($user_id),
         ];
         $db->update('endorse_campaign', $campaignUpdate, ['id' => $id_campaign]);
+        } finally {
+            // MySQL advisory locks are connection-scoped; always release so the next
+            // queue batch or cron run can update this campaign.
+            $db->query('SELECT RELEASE_LOCK(?)', [$lockName]);
+        }
     }
 
     private function load_prev_stats(int $id_endorse, string $today): array
     {
-        $canonicalLogs = $this->canonical_logs_from('endorse_logs');
         $rows = $this->CI->mymodel->selectWithQuery("
             SELECT likes_after, comment_after, share_save_after, views_after
-            FROM {$canonicalLogs}
+            FROM endorse_logs
             WHERE id_endorse = '$id_endorse' AND date < '$today' AND views_after > 0
             ORDER BY date DESC LIMIT 1
         ");
