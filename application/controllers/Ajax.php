@@ -185,16 +185,16 @@ class Ajax extends CI_Controller
 			: $this->endorse_sync->canonical_logs_from('endorse_logs');
 		$likesDeltaExpr = $useRollup
 			? 'endorse_logs.likes_delta'
-			: '(endorse_logs.likes_after - endorse_logs.likes_before)';
+			: 'GREATEST(COALESCE(endorse_logs.likes, 0), 0)';
 		$commentDeltaExpr = $useRollup
 			? 'endorse_logs.comment_delta'
-			: '(endorse_logs.comment_after - endorse_logs.comment_before)';
+			: 'GREATEST(COALESCE(endorse_logs.comment, 0), 0)';
 		$shareSaveDeltaExpr = $useRollup
 			? 'endorse_logs.share_save_delta'
-			: '(endorse_logs.share_save_after - endorse_logs.share_save_before)';
+			: 'GREATEST(COALESCE(endorse_logs.share_save, 0), 0)';
 		$viewsDeltaExpr = $useRollup
 			? 'endorse_logs.views_delta'
-			: '(endorse_logs.views_after - endorse_logs.views_before)';
+			: 'GREATEST(COALESCE(endorse_logs.views, 0), 0)';
 
         $keyword_category = $_GET['keyword_category'] ? $_GET['keyword_category'] : "Nama Creator";
         $keyword = $_GET['keyword'];

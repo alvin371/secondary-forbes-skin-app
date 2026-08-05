@@ -254,6 +254,7 @@ class Api_v2 extends CI_Controller
 
     public function cronjob_endorse_refresh()
     {
+        date_default_timezone_set('Asia/Jakarta');
         header('Content-Type: application/json; charset=utf-8');
         @set_time_limit(55);
 
@@ -284,12 +285,12 @@ class Api_v2 extends CI_Controller
             die;
         }
 
-        $parallel = intval(env('ENDORSE_REFRESH_PARALLEL_HTTP', 10));
+        $parallel = intval(env('ENDORSE_REFRESH_PARALLEL_HTTP', 20));
         $parallel = max(1, min(20, $parallel));
         $deadline = floatval(env('ENDORSE_REFRESH_DEADLINE_SEC', 45));
         $limit = $force
             ? intval(env('ENDORSE_REFRESH_FORCE_BATCH', 50))
-            : intval(env('ENDORSE_REFRESH_BATCH_SIZE', 40));
+            : intval(env('ENDORSE_REFRESH_BATCH_SIZE', 50));
         $limit = max(1, min(50, $limit));
 
         $claim = $this->endorserefreshqueueservice->claimBatch([
@@ -4925,6 +4926,7 @@ class Api_v2 extends CI_Controller
 
     function cronjob_endorse()
     {
+        date_default_timezone_set('Asia/Jakarta');
         if (!$this->acquire_cron_lock('endorse_daily_enqueue')) {
             header('Content-Type: application/json; charset=utf-8');
             http_response_code(429);

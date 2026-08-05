@@ -134,6 +134,7 @@ class Endorse_sync
      */
     public function apply(array $endorse, array $response, int $user_id, ?array $prev_stats = null): array
     {
+        date_default_timezone_set('Asia/Jakarta');
         $platform = strval($endorse['platform']);
         $url = strval($endorse['link_upload']);
 
@@ -155,20 +156,28 @@ class Endorse_sync
             $prev_stats = $this->load_prev_stats($id_endorse, $today);
         }
 
-        $prev_likes      = intval($prev_stats['likes_after'] ?? 0);
-        $prev_comment    = intval($prev_stats['comment_after'] ?? 0);
-        $prev_share_save = intval($prev_stats['share_save_after'] ?? 0);
-        $prev_views      = max(
-            intval($prev_stats['views_after'] ?? 0),
-            intval($endorse['views'] ?? 0)
-        );
-
         $stats = [
             'likes'      => intval($response['data']['like'] ?? 0),
             'comment'    => intval($response['data']['comment'] ?? 0),
             'share_save' => doubleval($response['data']['share'] ?? 0) + doubleval($response['data']['collect'] ?? 0),
             'views'      => intval($response['data']['view'] ?? 0),
         ];
+
+        // A daily row stores the start-of-day baseline. Reuse it on every
+        // subsequent refresh so an upsert represents the full daily growth,
+        // rather than only the final intra-day polling interval.
+        $existingDailyLog = $this->load_daily_log($id_endorse, $today);
+        $dailyMetrics = self::calculate_daily_metrics(
+            $prev_stats,
+            $existingDailyLog,
+            $stats,
+            intval($endorse['views'] ?? 0)
+        );
+        $prev_likes      = $dailyMetrics['before']['likes'];
+        $prev_comment    = $dailyMetrics['before']['comment'];
+        $prev_share_save = $dailyMetrics['before']['share_save'];
+        $prev_views      = $dailyMetrics['before']['views'];
+        $stats           = $dailyMetrics['after'];
 
         // Keep views non-decreasing per content (TikTok occasionally returns transient lower values).
         if ($stats['views'] < $prev_views) {
@@ -227,10 +236,10 @@ class Endorse_sync
 
         $db->update('endorse', $endorseUpdate, ['id' => $id_endorse]);
 
-        $views_diff      = max(0, $stats['views']      - $prev_views);
-        $likes_diff      = max(0, $stats['likes']      - $prev_likes);
-        $comment_diff    = max(0, $stats['comment']    - $prev_comment);
-        $share_save_diff = max(0, $stats['share_save'] - $prev_share_save);
+        $views_diff      = $dailyMetrics['delta']['views'];
+        $likes_diff      = $dailyMetrics['delta']['likes'];
+        $comment_diff    = $dailyMetrics['delta']['comment'];
+        $share_save_diff = $dailyMetrics['delta']['share_save'];
 
         $cpm_diff   = ($total_cost > 0 && $views_diff > 0)         ? ($total_cost / $views_diff * 1000)         : 0;
         $cpm_after  = ($total_cost > 0 && $stats['views'] > 0)     ? ($total_cost / $stats['views'] * 1000)     : 0;
@@ -434,6 +443,7 @@ class Endorse_sync
      */
     public function update_campaign_parent(int $id_campaign, int $user_id): void
     {
+        date_default_timezone_set('Asia/Jakarta');
         $db = $this->CI->db;
         $lockName = 'endorse_campaign_rollup_' . $id_campaign;
         $lock = $db->query('SELECT GET_LOCK(?, 0) AS acquired', [$lockName])->row_array();
@@ -561,6 +571,152 @@ class Endorse_sync
             ORDER BY date DESC LIMIT 1
         ");
         return !empty($rows) ? $rows[0] : [];
+    }
+
+    /**
+     * Return the latest log row already written for this content today.
+     *
+     * Its *_before values are the immutable baseline for all refreshes on
+     * that date.  Keeping this separate from the prior-day lookup avoids
+     * losing growth when the daily row is updated multiple times.
+     */
+    private function load_daily_log(int $id_endorse, string $today): array
+    {
+        $rows = $this->CI->mymodel->selectWithQuery("
+            SELECT id, likes_before, comment_before, share_save_before, views_before
+            FROM endorse_logs
+            WHERE id_endorse = '$id_endorse' AND date = '$today'
+            ORDER BY id DESC LIMIT 1
+        ");
+        return !empty($rows) ? $rows[0] : [];
+    }
+
+    /**
+     * Build the before/after/delta values for one calendar day.
+     *
+     * The first observed snapshot is deliberately measured from zero. This
+     * includes views that were already entered on the endorse record, while
+     * retaining that value as a monotonic floor for the cumulative metric.
+     */
+    public static function calculate_daily_metrics(
+        array $previousDayStats,
+        array $existingDailyLog,
+        array $incomingStats,
+        int $storedViews
+    ): array {
+        $metrics = ['likes', 'comment', 'share_save', 'views'];
+        $before = [];
+        $after = [];
+        $delta = [];
+
+        foreach ($metrics as $metric) {
+            $before[$metric] = $existingDailyLog
+                ? doubleval($existingDailyLog[$metric . '_before'] ?? 0)
+                : doubleval($previousDayStats[$metric . '_after'] ?? 0);
+            $after[$metric] = doubleval($incomingStats[$metric] ?? 0);
+        }
+
+        // A lower TikTok response must never reduce the stored cumulative
+        // view count. It must not, however, become the daily baseline.
+        $after['views'] = max($after['views'], doubleval($storedViews), $before['views']);
+
+        foreach ($metrics as $metric) {
+            $delta[$metric] = max(0, $after[$metric] - $before[$metric]);
+        }
+
+        return compact('before', 'after', 'delta');
+    }
+
+    /**
+     * Rebuild daily baselines and deltas from each content's end-of-day
+     * snapshots. Intended for a narrowly scoped historical repair.
+     */
+    public function rebuild_daily_deltas(int $idCampaign, string $fromDate, string $untilDate, int $userId = 0): int
+    {
+        date_default_timezone_set('Asia/Jakarta');
+
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $fromDate)
+            || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $untilDate)
+            || $fromDate > $untilDate) {
+            throw new InvalidArgumentException('Rentang tanggal rebuild endorse tidak valid.');
+        }
+
+        $db = $this->CI->db;
+        $campaignId = intval($idCampaign);
+        if ($campaignId <= 0) {
+            throw new InvalidArgumentException('Campaign endorse tidak valid.');
+        }
+
+        $untilDateEsc = $db->escape($untilDate);
+        $rows = $this->CI->mymodel->selectWithQuery("
+            SELECT l.id, l.id_endorse, l.date, l.total_cost,
+                   l.likes_after, l.comment_after, l.share_save_after, l.views_after
+            FROM endorse_logs l
+            INNER JOIN (
+                SELECT id_endorse, date, MAX(id) AS max_id
+                FROM endorse_logs
+                WHERE id_campaign = '$campaignId' AND date <= $untilDateEsc
+                GROUP BY id_endorse, date
+            ) latest ON latest.max_id = l.id
+            WHERE l.id_campaign = '$campaignId'
+            ORDER BY l.id_endorse ASC, l.date ASC, l.id ASC
+        ") ?: [];
+
+        $previousAfter = [];
+        $processed = 0;
+        $now = date('Y-m-d H:i:s');
+        $db->trans_start();
+
+        foreach ($rows as $row) {
+            $idEndorse = intval($row['id_endorse']);
+            $after = [
+                'likes' => doubleval($row['likes_after'] ?? 0),
+                'comment' => doubleval($row['comment_after'] ?? 0),
+                'share_save' => doubleval($row['share_save_after'] ?? 0),
+                'views' => doubleval($row['views_after'] ?? 0),
+            ];
+            $before = $previousAfter[$idEndorse] ?? [
+                'likes' => 0,
+                'comment' => 0,
+                'share_save' => 0,
+                'views' => 0,
+            ];
+
+            if (strval($row['date']) >= $fromDate) {
+                $delta = [];
+                foreach ($after as $metric => $value) {
+                    $delta[$metric] = max(0, $value - doubleval($before[$metric] ?? 0));
+                }
+
+                $totalCost = doubleval($row['total_cost'] ?? 0);
+                $payload = [
+                    'likes_before' => strval($before['likes']),
+                    'comment_before' => strval($before['comment']),
+                    'share_save_before' => strval($before['share_save']),
+                    'views_before' => strval($before['views']),
+                    'likes' => strval($delta['likes']),
+                    'comment' => strval($delta['comment']),
+                    'share_save' => strval($delta['share_save']),
+                    'views' => strval($delta['views']),
+                    'cpm_before' => strval($totalCost > 0 && $before['views'] > 0 ? $totalCost / $before['views'] * 1000 : 0),
+                    'cpm' => strval($totalCost > 0 && $delta['views'] > 0 ? $totalCost / $delta['views'] * 1000 : 0),
+                    'cpm_after' => strval($totalCost > 0 && $after['views'] > 0 ? $totalCost / $after['views'] * 1000 : 0),
+                    'updated_at' => $now,
+                    'updated_by' => strval($userId),
+                ];
+                $db->update('endorse_logs', $payload, ['id' => intval($row['id'])]);
+                $processed++;
+            }
+
+            $previousAfter[$idEndorse] = $after;
+        }
+
+        $db->trans_complete();
+        if ($db->trans_status() === false) {
+            throw new RuntimeException('Gagal membangun ulang delta endorse harian.');
+        }
+
+        return $processed;
     }
 
     public function upsert_daily_log_row(array $logRow, int $user_id): int
