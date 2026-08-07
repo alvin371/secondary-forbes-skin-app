@@ -1,342 +1,69 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
-<?php
-/**
- * Endorse analytics V2 — dashboard cards + dual-series chart.
- *
- * Included from endorse/all.php only when ENDORSE_ANALYTICS_V2 is 'on'. The
- * legacy cards (#summary-mar-*) and chart (#summary-chart) remain in place and
- * untouched, so switching the flag back to 'off' restores the previous UI with
- * no other change.
- *
- * Bars  = observed_daily_growth  (left axis)
- * Line  = total_observed_views   (right axis)
- */
-?>
 <style>
-    .v2-card { border: 1px solid #dee2e6; border-radius: .375rem; padding: .75rem .9rem; height: 100%; background: #fff; }
-    .v2-card .v2-label { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: #6c757d; }
-    .v2-card .v2-value { font-size: 24px; font-weight: 600; line-height: 1.2; }
-    .v2-card .v2-sub { font-size: 11px; color: #6c757d; }
-    .v2-card .v2-meta { font-size: 11px; color: #6c757d; margin-top: .35rem; }
-    .v2-card .v2-delta { font-size: 12px; font-weight: 600; margin-top: .15rem; }
-    .v2-card .v2-up { color: #0f5132; }
-    .v2-card .v2-down { color: #842029; }
-    .v2-badge { font-size: 10px; padding: .1rem .4rem; border-radius: .25rem; font-weight: 600; }
-    .v2-badge-complete { background: #d1e7dd; color: #0f5132; }
-    .v2-badge-partial { background: #fff3cd; color: #664d03; }
-    .v2-badge-insufficient { background: #f8d7da; color: #842029; }
-    .v2-toggle .btn { font-size: 12px; }
-    .v2-note { font-size: 11px; color: #6c757d; }
-    #v2-chart-wrap { position: relative; height: 320px; }
-    @media (max-width: 767.98px) {
-        #v2-chart-wrap { height: 260px; }
-        .v2-card .v2-value { font-size: 20px; }
-    }
+  .ea2-card { border:1px solid #d9e0e7; border-radius:10px; background:#fff; padding:14px; height:100%; }
+  .ea2-label { color:#536273; font-size:12px; font-weight:600; }
+  .ea2-value { color:#17212b; font-size:24px; font-weight:700; line-height:1.25; margin:6px 0; }
+  .ea2-meta { color:#536273; font-size:12px; line-height:1.5; }
+  .ea2-status { display:inline-block; padding:2px 7px; border-radius:999px; font-size:11px; font-weight:600; }
+  .ea2-lengkap { background:#d9f3e5; color:#155c38; }.ea2-sebagian_lengkap { background:#fff0c7; color:#765400; }.ea2-tidak_memadai { background:#fbe0e1; color:#8b2730; }
+  #ea2-chart-wrap { height:330px; position:relative; }
+  .ea2-daily { border-top:1px solid #d9e0e7; padding:14px 0; }.ea2-daily:first-child { border-top:0; }
+  .ea2-daily strong { color:#17212b; }.ea2-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:10px; }
+  @media (max-width:767px) { #ea2-chart-wrap { height:260px; }.ea2-value { font-size:21px; } }
 </style>
 
-<div class="col-lg-12 mb-3">
-    <div class="card summary">
-        <div class="d-flex align-items-center justify-content-between flex-wrap mb-2">
-            <h3 class="text-primary fw-600 mb-1">Grafik Campaign (V2)</h3>
-            <div class="btn-group btn-group-sm v2-toggle" role="group" aria-label="Pilih metrik">
-                <button type="button" class="btn btn-outline-primary" data-v2-mode="growth">Daily Growth</button>
-                <button type="button" class="btn btn-outline-primary" data-v2-mode="total">Total Views</button>
-                <button type="button" class="btn btn-primary active" data-v2-mode="both">Both</button>
-            </div>
-        </div>
-
-        <div class="row g-2 mb-3" id="v2-cards">
-            <!-- Card A — Total Views -->
-            <div class="col-6 col-lg-3">
-                <div class="v2-card">
-                    <div class="v2-label">Total Views</div>
-                    <div class="v2-value" id="v2-total-views">&mdash;</div>
-                    <div class="v2-sub" id="v2-total-views-sub">Terakhir teramati</div>
-                    <div class="v2-delta" id="v2-total-views-delta"></div>
-                    <div class="v2-meta" id="v2-total-views-meta"></div>
-                </div>
-            </div>
-            <!-- Card B — Growth in selected period -->
-            <div class="col-6 col-lg-3">
-                <div class="v2-card">
-                    <div class="v2-label">Pertumbuhan Views</div>
-                    <div class="v2-value" id="v2-growth">&mdash;</div>
-                    <div class="v2-sub" id="v2-growth-sub"></div>
-                    <div class="v2-meta" id="v2-growth-meta"></div>
-                </div>
-            </div>
-            <!-- Card C — Opening views -->
-            <div class="col-6 col-lg-3">
-                <div class="v2-card">
-                    <div class="v2-label">Opening Views</div>
-                    <div class="v2-value" id="v2-opening">&mdash;</div>
-                    <div class="v2-sub">Sudah ada saat observasi pertama</div>
-                    <div class="v2-meta" id="v2-opening-meta"></div>
-                </div>
-            </div>
-            <!-- Card D — Data coverage -->
-            <div class="col-6 col-lg-3">
-                <div class="v2-card">
-                    <div class="v2-label">Cakupan Data</div>
-                    <div class="v2-value" id="v2-coverage">&mdash;</div>
-                    <div class="v2-sub" id="v2-coverage-sub">konten teramati</div>
-                    <div class="v2-meta" id="v2-coverage-meta"></div>
-                </div>
-            </div>
-        </div>
-
-        <div id="v2-chart-wrap"><canvas id="v2-chart"></canvas></div>
-        <div class="v2-note mt-2" id="v2-footnote"></div>
+<div class="col-lg-12 mb-3" id="endorse-analytics-v2">
+  <div class="card summary p-3">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+      <div><h3 class="text-primary fw-600 mb-0">Analitik Endorse</h3><small class="text-muted">Versi 2, berdasarkan sinkronisasi sistem</small></div>
+      <div class="btn-group btn-group-sm" role="group" aria-label="Tampilan grafik"><button class="btn btn-outline-primary" data-ea2-mode="kenaikan">Kenaikan</button><button class="btn btn-outline-primary" data-ea2-mode="total">Total</button><button class="btn btn-primary active" data-ea2-mode="gabungan">Gabungan</button></div>
     </div>
+    <div class="row g-2 mb-3">
+      <div class="col-sm-6 col-xl-3"><section class="ea2-card"><div class="ea2-label">Total Views Terakhir Disinkronkan</div><div id="ea2-total" class="ea2-value">—</div><div id="ea2-total-meta" class="ea2-meta"></div></section></div>
+      <div class="col-sm-6 col-xl-3"><section class="ea2-card"><div class="ea2-label">Total Kenaikan Views</div><div id="ea2-growth" class="ea2-value">—</div><div id="ea2-growth-meta" class="ea2-meta"></div></section></div>
+      <div class="col-sm-6 col-xl-3"><section class="ea2-card"><div class="ea2-label">Status Sinkronisasi</div><div id="ea2-status" class="ea2-value">—</div><div id="ea2-status-meta" class="ea2-meta"></div><a id="ea2-problems" class="small" href="#">Lihat Masalah</a></section></div>
+      <div class="col-sm-6 col-xl-3"><section class="ea2-card"><div class="ea2-label">Duplikat Terdeteksi</div><div id="ea2-duplicates" class="ea2-value">—</div><div id="ea2-duplicates-meta" class="ea2-meta"></div><a id="ea2-duplicates-link" class="small" href="#">Lihat Data</a></section></div>
+    </div>
+    <div id="ea2-chart-wrap"><canvas id="ea2-chart"></canvas></div>
+    <p class="ea2-meta mt-2 mb-0" id="ea2-note"></p>
+  </div>
 </div>
+<div class="col-lg-12 mb-3"><div class="card summary p-3"><h4 class="text-primary fw-600 mb-2">Rincian Harian</h4><div id="ea2-daily"><div class="text-muted small">Memuat rincian sinkronisasi…</div></div></div></div>
 
 <script>
-    (function () {
-        var V2_ENDPOINT = '<?= base_url() ?>ajax/get-chart-campaign-v2';
-        var v2Mode = 'both';
-        var v2Data = null;
-
-        function fmt(n) {
-            if (n === null || n === undefined) return '—';
-            return Number(n).toLocaleString('id-ID');
-        }
-
-        function badge(status) {
-            var cls = 'v2-badge-' + (status || 'insufficient');
-            var label = { complete: 'Lengkap', partial: 'Sebagian', insufficient: 'Tidak memadai' }[status] || 'Tidak memadai';
-            return '<span class="v2-badge ' + cls + '">' + label + '</span>';
-        }
-
-        function renderCards(payload) {
-            var s = payload.summary || {};
-            var until = (payload.meta && payload.meta.until) || '';
-            var from = (payload.meta && payload.meta.from) || '';
-            var observed = s.latest_observed_date || until;
-
-            // --- Card A: Total Views, with the day-over-day change ---
-            $('#v2-total-views').text(fmt(s.total_views_at_end_date));
-            $('#v2-total-views-sub').text('Terakhir teramati pada ' + observed);
-
-            if (s.total_views_change_vs_previous_day === null || s.total_views_change_vs_previous_day === undefined) {
-                $('#v2-total-views-delta').html('<span class="text-muted">Belum ada hari pembanding</span>');
-            } else {
-                var chg = Number(s.total_views_change_vs_previous_day);
-                var cls = chg < 0 ? 'v2-down' : 'v2-up';
-                $('#v2-total-views-delta').html(
-                    '<span class="' + cls + '">' + (chg < 0 ? '' : '+') + fmt(chg) + '</span>' +
-                    ' <span class="text-muted">vs ' + s.previous_observed_date + '</span>'
-                );
-            }
-
-            // The cumulative total moves by growth AND by opening views of any
-            // content that joined the population. Spelling that out stops the
-            // number being misread as daily growth.
-            $('#v2-total-views-meta').html(
-                (s.total_views_change_vs_previous_day === null || s.total_views_change_vs_previous_day === undefined
-                    ? ''
-                    : fmt(s.latest_daily_growth) + ' pertumbuhan + ' + fmt(s.latest_opening_views) + ' opening<br>') +
-                fmt(s.included_post_count) + ' konten &middot; ' +
-                fmt(s.unresolved_post_count) + ' belum teridentifikasi'
-            );
-
-            // --- Card B: growth over the period, with per-day context ---
-            $('#v2-growth').text(fmt(s.growth_in_selected_period));
-            $('#v2-growth-sub').text(from + ' s/d ' + until);
-
-            var growthMeta = [];
-            if (s.observed_day_count > 0) {
-                growthMeta.push('&#8960; ' + fmt(s.average_daily_growth) + ' / hari' +
-                    ' <span class="text-muted">(' + s.observed_day_count + ' hari teramati)</span>');
-            }
-            if (s.peak_daily_growth_date) {
-                growthMeta.push('Tertinggi ' + s.peak_daily_growth_date + ': ' + fmt(s.peak_daily_growth));
-            }
-            $('#v2-growth-meta').html(growthMeta.join('<br>') || 'Belum ada hari teramati.');
-
-            // --- Card C: opening views, with the latest day's contribution ---
-            $('#v2-opening').text(fmt(s.opening_views_in_selected_period));
-            $('#v2-opening-meta').html(
-                (s.latest_observed_date
-                    ? observed + ': ' + fmt(s.latest_opening_views) + '<br>'
-                    : '') +
-                'Bukan pertumbuhan yang diperoleh pada hari tersebut.'
-            );
-
-            // --- Card D: coverage, broken down per day ---
-            var dayCounts = s.completeness_day_counts || {};
-            $('#v2-coverage').text(fmt(s.included_post_count));
-            $('#v2-coverage-meta').html(
-                fmt(s.unresolved_post_count) + ' belum teridentifikasi &middot; ' +
-                fmt(s.duplicate_group_count) + ' grup duplikat<br>' +
-                badge(s.data_completeness) + ' ' +
-                '<span class="text-muted">' +
-                    (dayCounts.complete || 0) + ' lengkap &middot; ' +
-                    (dayCounts.partial || 0) + ' sebagian &middot; ' +
-                    (dayCounts.insufficient || 0) + ' kurang' +
-                '</span>'
-            );
-
-            var notes = [];
-            if (s.unresolved_post_count > 0) {
-                notes.push('Konten tanpa snapshot provider dihitung sebagai belum teridentifikasi, bukan sebagai 0 views.');
-            }
-            if (s.carried_forward_count > 0) {
-                notes.push(fmt(s.carried_forward_count) + ' nilai kumulatif dibawa dari observasi sebelumnya.');
-            }
-            if (s.growth_since_last_observation > 0) {
-                notes.push(fmt(s.growth_since_last_observation) + ' views tumbuh melintasi jeda observasi dan tidak dibebankan ke satu tanggal.');
-            }
-            if (s.negative_anomaly_count > 0) {
-                notes.push(s.negative_anomaly_count + ' anomali: views kumulatif turun dibanding observasi sebelumnya.');
-            }
-            notes.push('Total views = ' + (payload.metric_definition ? payload.metric_definition.total_observed_views : ''));
-            $('#v2-footnote').html(notes.join('<br>'));
-        }
-
-        function renderChart(payload) {
-            var canvas = document.getElementById('v2-chart');
-            if (!canvas) return;
-            // The legacy chart leaks instances via a randomised canvas id; V2
-            // uses a stable id and always destroys the previous instance.
-            var existing = Chart.getChart(canvas);
-            if (existing) existing.destroy();
-
-            var dates = payload.dates || [];
-            var labels = dates.map(function (d) { return d.date; });
-            var growth = dates.map(function (d) { return d.observed_daily_growth; });
-            var total = dates.map(function (d) { return d.total_observed_views; });
-
-            var datasets = [];
-            if (v2Mode === 'growth' || v2Mode === 'both') {
-                datasets.push({
-                    type: 'bar',
-                    label: 'Daily Observed Growth',
-                    data: growth,
-                    yAxisID: 'y',
-                    backgroundColor: 'rgba(13,110,253,0.55)',
-                    borderColor: 'rgba(13,110,253,1)',
-                    borderWidth: 1,
-                    order: 2
-                });
-            }
-            if (v2Mode === 'total' || v2Mode === 'both') {
-                datasets.push({
-                    type: 'line',
-                    label: 'Total Observed Views',
-                    data: total,
-                    yAxisID: v2Mode === 'both' ? 'y1' : 'y',
-                    borderColor: 'rgba(25,135,84,1)',
-                    backgroundColor: 'rgba(25,135,84,0.1)',
-                    borderWidth: 2,
-                    pointRadius: 2,
-                    tension: 0.25,
-                    fill: false,
-                    order: 1
-                });
-            }
-
-            var scales = {
-                x: { grid: { display: false }, ticks: { autoSkip: true, maxTicksLimit: 10, font: { size: 11 } } },
-                y: {
-                    position: 'left',
-                    beginAtZero: true,
-                    title: { display: true, text: v2Mode === 'total' ? 'Total Views' : 'Daily Growth', font: { size: 11 } },
-                    ticks: { callback: function (v) { return fmt(v); }, font: { size: 10 } }
-                }
-            };
-            if (v2Mode === 'both') {
-                scales.y1 = {
-                    position: 'right',
-                    beginAtZero: true,
-                    title: { display: true, text: 'Total Views', font: { size: 11 } },
-                    grid: { drawOnChartArea: false },
-                    ticks: { callback: function (v) { return fmt(v); }, font: { size: 10 } }
-                };
-            }
-
-            new Chart(canvas.getContext('2d'), {
-                type: 'bar',
-                data: { labels: labels, datasets: datasets },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: { mode: 'index', intersect: false },
-                    scales: scales,
-                    plugins: {
-                        datalabels: { display: false },
-                        legend: { display: true, labels: { boxWidth: 12, font: { size: 11 } } },
-                        tooltip: {
-                            callbacks: {
-                                title: function (items) { return items.length ? items[0].label : ''; },
-                                label: function () { return null; },
-                                afterBody: function (items) {
-                                    if (!items.length) return [];
-                                    var d = dates[items[0].dataIndex];
-                                    if (!d) return [];
-                                    var lines = [
-                                        'Daily observed growth: ' + (d.observed_daily_growth === null ? 'tidak ada data' : fmt(d.observed_daily_growth)),
-                                        'Total observed views: ' + fmt(d.total_observed_views),
-                                        'Opening views: ' + fmt(d.opening_views),
-                                        'Konten diikutkan: ' + fmt(d.included_post_count),
-                                        'Belum teridentifikasi: ' + fmt(d.unresolved_post_count),
-                                        'Kelengkapan: ' + d.data_completeness
-                                    ];
-                                    if (d.unresolved_post_count > 0) {
-                                        lines.push('No successful snapshot for ' + d.unresolved_post_count + ' posts');
-                                        lines.push('Growth shown only for observed posts');
-                                    }
-                                    if (d.carried_forward_count > 0) {
-                                        lines.push(d.carried_forward_count + ' nilai dibawa dari observasi sebelumnya');
-                                    }
-                                    if (d.growth_since_last_observation > 0) {
-                                        lines.push('Termasuk ' + fmt(d.growth_since_last_observation) + ' dari jeda observasi');
-                                    }
-                                    if (d.duplicate_group_count > 0) {
-                                        lines.push(d.duplicate_group_count + ' grup konten duplikat');
-                                    }
-                                    return lines;
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        }
-
-        function render() {
-            if (!v2Data) return;
-            renderCards(v2Data);
-            renderChart(v2Data);
-        }
-
-        window.getChartV2 = function () {
-            var params = {};
-            new URLSearchParams(window.location.search).forEach(function (v, k) { params[k] = v; });
-            params['start_date'] = $('#chart_start_date').val() || params['start_date'] || '';
-            params['until_date'] = $('#chart_until_date').val() || params['until_date'] || '';
-
-            $.ajax({
-                dataType: 'json',
-                url: V2_ENDPOINT + '?' + $.param(params),
-                success: function (payload) {
-                    if (!payload || payload.enabled === false) return;
-                    v2Data = payload;
-                    render();
-                },
-                error: function (xhr) {
-                    if (xhr.status === 410) return; // flag is off; legacy chart stands alone
-                    $('#v2-footnote').html('<span class="text-danger">Gagal memuat analitik V2.</span>');
-                }
-            });
-        };
-
-        $(document).on('click', '.v2-toggle .btn', function () {
-            v2Mode = $(this).data('v2-mode');
-            $('.v2-toggle .btn').removeClass('btn-primary active').addClass('btn-outline-primary');
-            $(this).removeClass('btn-outline-primary').addClass('btn-primary active');
-            renderChart(v2Data || { dates: [] });
-        });
-
-        $(function () { window.getChartV2(); });
-    })();
+(function () {
+  var endpoint = '<?= base_url() ?>ajax/get-chart-campaign-v2', mode = 'gabungan', data = null;
+  function angka(v, plus) { if (v === null || v === undefined) return '—'; return (plus && Number(v) > 0 ? '+' : '') + Number(v).toLocaleString('id-ID'); }
+  function teksWaktu(v) { if (!v) return 'Belum ada data'; var d = new Date(v); return isNaN(d) ? v : d.toLocaleDateString('id-ID',{day:'numeric',month:'long',year:'numeric'}) + ', ' + d.toLocaleTimeString('id-ID',{hour12:false}) + ' WIB'; }
+  function esc(v) { return $('<div>').text(v || '').html(); }
+  function tautanMasalah() { var p = new URLSearchParams(location.search); p.set('status','Gagal Sinkronisasi'); return '<?= base_url() ?>endorse?' + p.toString(); }
+  function renderCards(p) {
+    var s = p.ringkasan || p.summary || {};
+    $('#ea2-total').text(angka(s.total_views_terakhir_disinkronkan));
+    $('#ea2-total-meta').html('Data terbaru: ' + teksWaktu(s.sinkronisasi_terbaru) + '<br>Data tertua: ' + teksWaktu(s.sinkronisasi_terlama) + '<br>' + angka(s.jumlah_berhasil) + ' dari ' + angka(s.jumlah_post) + ' post berhasil, cakupan ' + angka(s.cakupan_persen) + '%');
+    $('#ea2-growth').text(angka(s.total_kenaikan_views, true));
+    $('#ea2-growth-meta').text(s.menggunakan_filter_tanggal ? 'Akumulasi kenaikan pada periode yang dipilih.' : 'Kenaikan pada tanggal pelaporan terbaru.');
+    $('#ea2-status').text(angka(s.jumlah_berhasil) + '/' + angka(s.jumlah_post) + ' berhasil');
+    $('#ea2-status-meta').html(angka(s.jumlah_gagal) + ' gagal<br>' + angka(s.jumlah_belum_pernah_berhasil) + ' belum pernah berhasil<br>Terakhir sinkronisasi: ' + teksWaktu(s.sinkronisasi_terbaru));
+    $('#ea2-duplicates').text(angka(s.jumlah_grup_duplikat) + ' grup');
+    $('#ea2-duplicates-meta').text(angka(s.jumlah_baris_duplikat) + ' baris terindikasi duplikat');
+    $('#ea2-problems').attr('href', tautanMasalah()); $('#ea2-duplicates-link').attr('href', '<?= base_url() ?>endorse?' + new URLSearchParams(location.search).toString());
+    $('#ea2-note').text('Nilai total memakai snapshot berhasil terakhir per konten. Konten gagal memakai nilai terakhir dan ditandai sebagai data terbawa, bukan nol views.');
+  }
+  function renderDaily(p) {
+    var days = p.harian || p.dates || [];
+    if (!days.length) { $('#ea2-daily').html('<div class="text-muted small">Tidak ada data pada filter ini.</div>'); return; }
+    $('#ea2-daily').html(days.slice().reverse().map(function(d) { var status = d.kelengkapan_data || 'tidak_memadai'; return '<article class="ea2-daily"><div class="d-flex justify-content-between gap-2"><strong>' + esc(d.tanggal_label || d.tanggal) + '</strong><span class="ea2-status ea2-' + esc(status) + '">' + esc({lengkap:'Lengkap',sebagian_lengkap:'Sebagian lengkap',tidak_memadai:'Tidak memadai'}[status] || status) + '</span></div><div class="ea2-grid mt-2"><div><small class="text-muted">Total Views</small><br><strong>' + angka(d.total_views_terakhir_disinkronkan) + '</strong></div><div><small class="text-muted">Kenaikan Hari Ini</small><br><strong>' + angka(d.kenaikan_views, true) + '</strong></div><div><small class="text-muted">Sinkronisasi</small><br><span class="small">' + teksWaktu(d.sinkronisasi_terbaru) + '</span></div></div><div class="ea2-meta mt-2">' + angka(d.jumlah_berhasil) + ' dari ' + angka(d.jumlah_post) + ' post berhasil, cakupan ' + angka(d.cakupan_persen) + '% · ' + angka(d.jumlah_gagal) + ' post gagal · ' + angka(d.jumlah_menggunakan_data_terakhir) + ' memakai data terakhir · ' + angka(d.jumlah_grup_duplikat) + ' grup duplikat' + (d.memiliki_anomali ? ' · Nilai total menurun dan perlu diperiksa' : '') + '</div><a class="small" href="' + tautanMasalah() + '">Lihat Detail</a></article>'; }).join(''));
+  }
+  function renderChart(p) {
+    var canvas = document.getElementById('ea2-chart'), days = p.harian || p.dates || [], old = Chart.getChart(canvas); if (old) old.destroy();
+    var all = [{type:'bar',label:'Kenaikan Views Harian',data:days.map(function(d){return d.kenaikan_views;}),yAxisID:'growth',backgroundColor:'rgba(13,110,253,.55)',borderColor:'#0d6efd',borderWidth:1},{type:'line',label:'Total Views Terakhir Disinkronkan',data:days.map(function(d){return d.total_views_terakhir_disinkronkan;}),yAxisID:'total',borderColor:'#157347',backgroundColor:'rgba(21,115,71,.12)',borderWidth:2,pointRadius:2,tension:.2}];
+    var datasets = mode === 'kenaikan' ? [all[0]] : mode === 'total' ? [all[1]] : all;
+    new Chart(canvas,{type:'bar',data:{labels:days.map(function(d){return d.tanggal_label || d.tanggal;}),datasets:datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},scales:{growth:{display:mode !== 'total',position:'left',beginAtZero:true,title:{display:mode !== 'total',text:'Kenaikan Views'}},total:{display:mode !== 'kenaikan',position:mode === 'gabungan'?'right':'left',beginAtZero:true,grid:{drawOnChartArea:mode !== 'gabungan'},title:{display:mode !== 'kenaikan',text:'Total Views'}}},plugins:{tooltip:{callbacks:{afterBody:function(items){var d=days[items[0].dataIndex];return ['Total views terakhir disinkronkan: '+angka(d.total_views_terakhir_disinkronkan),'Kenaikan views: '+angka(d.kenaikan_views,true),angka(d.jumlah_berhasil)+' dari '+angka(d.jumlah_post)+' post berhasil disinkronkan',angka(d.jumlah_gagal)+' post gagal',angka(d.jumlah_menggunakan_data_terakhir)+' post memakai data terakhir',angka(d.jumlah_grup_duplikat)+' grup duplikat','Sinkronisasi terakhir: '+teksWaktu(d.sinkronisasi_terbaru),'Status data: '+({lengkap:'Lengkap',sebagian_lengkap:'Sebagian lengkap',tidak_memadai:'Tidak memadai'}[d.kelengkapan_data] || d.kelengkapan_data)];}}}}}});
+  }
+  function render() { if (!data) return; renderCards(data); renderDaily(data); renderChart(data); }
+  window.getChartV2 = function(){ var p=new URLSearchParams(location.search); p.set('start_date',$('#chart_start_date').val() || p.get('start_date') || ''); p.set('until_date',$('#chart_until_date').val() || p.get('until_date') || ''); $.getJSON(endpoint + '?' + p.toString()).done(function(v){if(v && v.enabled !== false){data=v;render();}}).fail(function(){ $('#ea2-note').text('Gagal memuat Analitik Endorse.'); }); };
+  $(document).on('click','[data-ea2-mode]',function(){ mode=$(this).data('ea2-mode'); $('[data-ea2-mode]').removeClass('btn-primary active').addClass('btn-outline-primary'); $(this).removeClass('btn-outline-primary').addClass('btn-primary active'); renderChart(data || {}); });
+  $(function(){ window.getChartV2(); });
+})();
 </script>
