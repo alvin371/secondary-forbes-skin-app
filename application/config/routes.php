@@ -102,6 +102,8 @@ $route['googlemou']                             = 'googlemou/index';
 // Additive V2 analytics read model. The legacy ajax/get-chart-campaign route
 // (resolved by translate_uri_dashes) is deliberately left in place.
 $route['ajax/get-chart-campaign-v2'] = 'Ajax/get_chart_campaign_v2';
+$route['ajax/get-endorse-cards-v2'] = 'Ajax/get_endorse_cards_v2';
+$route['endorse/list'] = 'Endorse/index';
 $route['ajax/refresh-campaign-endorses'] = 'Ajax/refresh_campaign_endorses';
 $route['ajax/refresh-all-active-endorses'] = 'Ajax/refresh_all_active_endorses';
 $route['ajax/analytics-summary']     = 'Ajax/get_analytics_summary';

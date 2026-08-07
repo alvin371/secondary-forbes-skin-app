@@ -411,6 +411,14 @@ class Endorse extends BaseController
             $qry .= " AND status = '$status_data' ";
         }
 
+        // Stable duplicate deep link. It deliberately identifies content, not
+        // a mutable pagination position.
+        $content_id = preg_replace('/\D/', '', strval($_GET['content_id'] ?? ''));
+        if ($content_id !== '') {
+            $contentEsc = $this->db->escape($content_id);
+            $qry .= " AND REGEXP_SUBSTR(link_upload,'[0-9]{15,}') = $contentEsc ";
+        }
+
         if ($keyword) {
             if ($keyword_category == "Nama Creator") {
                 $qry .= " AND nama_creator LIKE '%$keyword%' ";

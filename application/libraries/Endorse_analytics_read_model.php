@@ -85,6 +85,150 @@ class Endorse_analytics_read_model
         ];
     }
 
+    /**
+     * Read-only metrics for the raw endorse cards currently visible in the list.
+     * Duplicate raw cards intentionally receive the same canonical metric while
+     * the chart continues to count that canonical content only once.
+     */
+    public function build_post_cards(array $get, array $endorseIds): array
+    {
+        $endorseIds = array_values(array_unique(array_filter(array_map('intval', $endorseIds))));
+        if (empty($endorseIds)) return [];
+
+        $get['ids'] = implode(',', $endorseIds);
+        $filters = Endorse_analytics_v2::build_filters($get, [$this->CI->db, 'escape_str']);
+        $dates = Endorse_analytics_v2::date_range($filters['from'], $filters['until']);
+        if (empty($dates)) return [];
+
+        $rows = $this->load_observations($filters);
+        $scope = $this->scope_posts($filters);
+        $duplicates = $this->duplicate_content_ids($filters);
+        $series = $this->canonical_series($rows, $scope, $dates);
+        $lastDate = end($dates);
+
+        $byRaw = [];
+        foreach ($rows as $row) $byRaw[intval($row['id_endorse'])][] = $row;
+
+        $rawToCanonical = [];
+        $canonicalRawIds = [];
+        foreach ($scope as $id => $post) {
+            $key = $this->canonical_key($post, intval($id));
+            $rawToCanonical[intval($id)] = $key;
+            $canonicalRawIds[$key][] = intval($id);
+        }
+        foreach ($canonicalRawIds as &$ids) sort($ids, SORT_NUMERIC);
+        unset($ids);
+
+        $failures = $this->failure_details($endorseIds, $lastDate);
+        $out = [];
+        foreach ($endorseIds as $id) {
+            $key = $rawToCanonical[$id] ?? null;
+            $day = $key !== null ? ($series[$key][$lastDate] ?? null) : null;
+            if ($day === null) continue;
+            $sourceId = $canonicalRawIds[$key][0] ?? $id;
+            $lastSync = $this->last_sync_for_rows($byRaw[$sourceId] ?? [], $lastDate);
+            $failure = $failures[$id] ?? null;
+            if ($failure === null && $day['state'] === Endorse_analytics_v2::STATE_GAGAL) {
+                $failure = [
+                    'alasan' => 'Sistem tidak berhasil memperoleh data baru pada tanggal ini',
+                    'terakhir_mencoba' => null,
+                    'terakhir_mencoba_label' => 'Tidak tersedia',
+                    'jumlah_percobaan' => 0,
+                    'pesan_teknis' => '',
+                ];
+            }
+            if ($failure === null && $day['state'] === Endorse_analytics_v2::STATE_BELUM_PERNAH) {
+                $failure = [
+                    'alasan' => Endorse_analytics_v2::alasan_gagal('belum_pernah'),
+                    'terakhir_mencoba' => null,
+                    'terakhir_mencoba_label' => 'Tidak tersedia',
+                    'jumlah_percobaan' => 0,
+                    'pesan_teknis' => '',
+                ];
+            }
+            $duplicateRows = intval($duplicates[$key] ?? 0);
+            $out[$id] = [
+                'id_endorse' => $id,
+                'id_campaign' => intval($scope[$id]['id_campaign'] ?? 0),
+                'pic' => strval($scope[$id]['pic'] ?? ''),
+                'link_postingan' => strval($scope[$id]['link_upload'] ?? ''),
+                'tanggal' => $lastDate,
+                'total_views_terakhir_disinkronkan' => intval($day['total']),
+                'kenaikan_views' => intval($day['kenaikan']),
+                'status_sinkronisasi' => $day['state'],
+                'status_label' => Endorse_analytics_v2::status_label($day['state']),
+                'menggunakan_data_terakhir' => !empty($day['carried']),
+                'memiliki_anomali' => !empty($day['anomali']),
+                'selisih_negatif' => intval($day['selisih_mentah']),
+                'sinkronisasi_terakhir' => Endorse_analytics_v2::waktu_iso($lastSync),
+                'sinkronisasi_terakhir_label' => Endorse_analytics_v2::waktu_label($lastSync),
+                'content_id' => $this->content_from_key($key),
+                'has_duplicate' => $duplicateRows > 1,
+                'duplicate_row_count' => $duplicateRows,
+                'failure' => $failure,
+            ];
+        }
+        return $out;
+    }
+
+    private function content_from_key(string $key): string
+    {
+        $parts = explode('|', $key, 3);
+        return isset($parts[2]) && strpos($parts[2], 'raw:') !== 0 ? $parts[2] : '';
+    }
+
+    private function last_sync_for_rows(array $rows, string $until): ?string
+    {
+        $latest = null;
+        foreach ($rows as $row) {
+            if (strval($row['log_date'] ?? '') > $until) continue;
+            $at = strval($row['updated_at'] ?? $row['created_at'] ?? '');
+            if ($at !== '' && ($latest === null || $at > $latest)) $latest = $at;
+        }
+        return $latest;
+    }
+
+    /** Latest failed attempt at or before the reporting date, keyed by endorse. */
+    private function failure_details(array $endorseIds, string $until): array
+    {
+        if (!$this->CI->db->table_exists('endorse_refresh_queue')) return [];
+        $list = implode(',', array_map('intval', $endorseIds));
+        $untilSql = $this->CI->db->escape($until . ' 23:59:59');
+        $attemptJoin = $this->CI->db->table_exists('endorse_refresh_queue_attempts')
+            ? "LEFT JOIN endorse_refresh_queue_attempts a ON a.queue_id = q.id
+                 AND a.id = (SELECT MAX(a2.id) FROM endorse_refresh_queue_attempts a2 WHERE a2.queue_id = q.id)"
+            : 'LEFT JOIN (SELECT NULL AS error_class, NULL AS error_message, NULL AS finished_at) a ON 1 = 1';
+        $rows = $this->CI->mymodel->selectWithQuery("
+            SELECT q.id_endorse, q.attempts, q.error_message, q.completed_at, q.created_at,
+                   a.error_class, a.error_message AS attempt_error_message, a.finished_at
+              FROM endorse_refresh_queue q
+              {$attemptJoin}
+              INNER JOIN (
+                    SELECT id_endorse, MAX(id) AS id
+                      FROM endorse_refresh_queue
+                     WHERE id_endorse IN ($list) AND status = 'failed' AND created_at <= {$untilSql}
+                     GROUP BY id_endorse
+              ) latest ON latest.id = q.id
+        ") ?: [];
+        $out = [];
+        foreach ($rows as $row) {
+            $technical = strval($row['attempt_error_message'] ?: $row['error_message']);
+            $out[intval($row['id_endorse'])] = [
+                'alasan' => Endorse_analytics_v2::alasan_gagal(strval($row['error_class'] ?? ''), 'Sinkronisasi gagal'),
+                'terakhir_mencoba' => Endorse_analytics_v2::waktu_iso(strval($row['finished_at'] ?: $row['completed_at'] ?: $row['created_at'])),
+                'terakhir_mencoba_label' => Endorse_analytics_v2::waktu_label(strval($row['finished_at'] ?: $row['completed_at'] ?: $row['created_at'])),
+                'jumlah_percobaan' => intval($row['attempts'] ?? 0),
+                'pesan_teknis' => $this->redact_technical_message($technical),
+            ];
+        }
+        return $out;
+    }
+
+    private function redact_technical_message(string $message): string
+    {
+        return preg_replace('/(?i)(token|password|secret|api[_-]?key)\\s*[:=]\\s*[^\\s,;]+/', '$1=[disamarkan]', $message);
+    }
+
     /** Build one stable daily series for every canonical campaign/PIC/content. */
     private function canonical_series(array $rows, array $scopePosts, array $dates): array
     {
@@ -437,14 +581,16 @@ class Endorse_analytics_read_model
      */
     private function scope_posts(array $filters): array
     {
-        $where = array_values(array_filter($filters['where'], function ($w) {
-            return strpos($w, 'l.') !== 0;
-        }));
+        $where = array_values(array_map(function ($w) {
+            return preg_replace('/\bl\.id_endorse\b/', 'e.id', $w);
+        }, array_filter($filters['where'], function ($w) {
+            return strpos($w, 'l.') !== 0 || strpos($w, 'l.id_endorse') === 0;
+        })));
         $where[] = "e.status = 'Aktif'";
         $where[] = "e.link_upload <> ''";
 
         $sql = "
-            SELECT e.id, DATE(e.posting_at) AS entered, e.id_campaign, e.pic,
+            SELECT e.id, DATE(e.posting_at) AS entered, e.id_campaign, e.pic, e.link_upload,
                    REGEXP_SUBSTR(e.link_upload,'[0-9]{15,}') AS content_id
               FROM endorse e
               JOIN endorse_campaign c ON c.id = e.id_campaign
@@ -458,6 +604,7 @@ class Endorse_analytics_read_model
                 'id_campaign' => intval($r['id_campaign'] ?? 0),
                 'pic' => strval($r['pic'] ?? ''),
                 'content_id' => strval($r['content_id'] ?? ''),
+                'link_upload' => strval($r['link_upload'] ?? ''),
             ];
         }
         return $out;
