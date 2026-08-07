@@ -494,6 +494,14 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
             <?php } ?>
         </div>
     </div>
+    <?php
+    // Endorse analytics V2 — additive, flag-gated. When ENDORSE_ANALYTICS_V2 is
+    // not 'on' this renders nothing and the legacy chart below is unchanged.
+    $this->load->helper('env');
+    if (strtolower(trim(strval(env('ENDORSE_ANALYTICS_V2', 'off')))) === 'on') {
+        $this->load->view('endorse/_chart_v2');
+    }
+    ?>
     <div class="col-lg-12 mb-3">
         <div class="card summary">
             <h3 class="text-primary fw-600 mb-1">Grafik Campaign</h3>
@@ -716,6 +724,10 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
                             $("#summary-table").html('');
                         }
                     });
+
+                    // Keep the V2 panel in step with the same filters. No-op when
+                    // the feature flag is off, since the partial is not rendered.
+                    if (window.getChartV2) window.getChartV2();
                 }
 
 
