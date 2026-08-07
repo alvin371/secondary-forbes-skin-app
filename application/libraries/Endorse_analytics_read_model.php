@@ -118,6 +118,10 @@ class Endorse_analytics_read_model
      */
     private function load_observations(array $filters): array
     {
+        if ($this->use_derived()) {
+            return $this->load_observations_derived($filters);
+        }
+
         $where = $filters['where'];
         $from = $this->CI->db->escape($filters['from']);
         $until = $this->CI->db->escape($filters['until']);
@@ -153,6 +157,113 @@ class Endorse_analytics_read_model
         ";
 
         return $this->CI->mymodel->selectWithQuery($sql) ?: [];
+    }
+
+    /** Whether reads come from the additive derived table. */
+    private function use_derived(): bool
+    {
+        $this->CI->load->helper('env');
+        return env('ENDORSE_ANALYTICS_V2_DERIVED', '0') === '1'
+            && $this->CI->db->table_exists('endorse_daily_metrics_v2');
+    }
+
+    /**
+     * Same observation set, served from the additive derived table.
+     *
+     * Identical row shape to load_observations(), so the pure metric core and
+     * every unit test are unchanged — only the source of the rows differs.
+     * Rows whose source_checksum no longer matches endorse_logs are excluded so
+     * a stale cache can never quietly outrank the evidence.
+     */
+    private function load_observations_derived(array $filters): array
+    {
+        $where = array_map(function ($w) {
+            // Predicates were written against the l/e/c aliases; the derived
+            // table stands in for `l`.
+            return preg_replace('/\bl\./', 'm.', $w);
+        }, $filters['where']);
+
+        $from = $this->CI->db->escape($filters['from']);
+        $until = $this->CI->db->escape($filters['until']);
+
+        $sql = "
+            SELECT m.id_endorse, m.log_date, m.views, m.views_before, m.views_after,
+                   m.prev_after, m.prev_log_date, m.id_campaign, m.content_id,
+                   e.pic, c.is_internal
+              FROM endorse_daily_metrics_v2 m
+              JOIN endorse e          ON e.id = m.id_endorse
+              JOIN endorse_campaign c ON c.id = e.id_campaign
+              JOIN endorse_logs l     ON l.id_endorse = m.id_endorse AND l.log_date = m.log_date
+             WHERE m.log_date BETWEEN {$from} AND {$until}
+               AND m.calculation_version = " . $this->CI->db->escape(Endorse_analytics_v2::CALCULATION_VERSION) . "
+               AND m.source_checksum = MD5(CONCAT_WS(':', l.views_before, l.views, l.views_after))
+               " . (empty($where) ? '' : ' AND ' . implode(' AND ', $where)) . "
+             ORDER BY m.id_endorse ASC, m.log_date ASC
+        ";
+
+        return $this->CI->mymodel->selectWithQuery($sql) ?: [];
+    }
+
+    /**
+     * Rebuild the derived table for a date range, optionally scoped to one
+     * campaign. Idempotent: re-running produces identical rows. Reads
+     * endorse_logs; writes only endorse_daily_metrics_v2.
+     *
+     * @return int rows present in scope after the rebuild (NOT affected_rows,
+     *             which double-counts every upserted row)
+     */
+    public function rebuild_derived(string $from, string $until, ?int $campaignId = null): int
+    {
+        $fromEsc = $this->CI->db->escape($from);
+        $untilEsc = $this->CI->db->escape($until);
+        $floorEsc = $this->CI->db->escape(
+            date('Y-m-d', strtotime($from . ' -' . $this->lookback_days() . ' days'))
+        );
+        $version = $this->CI->db->escape(Endorse_analytics_v2::CALCULATION_VERSION);
+        $scope = $campaignId !== null ? ' AND e.id_campaign = ' . intval($campaignId) : '';
+
+        $this->CI->db->query("
+            INSERT INTO endorse_daily_metrics_v2
+                (id_endorse, log_date, id_campaign, content_id, views, views_before, views_after,
+                 prev_after, prev_log_date, calculation_version, source_checksum, built_at)
+            SELECT x.id_endorse, x.log_date, x.id_campaign, x.content_id,
+                   x.views, x.views_before, x.views_after, x.prev_after, x.prev_log_date,
+                   {$version},
+                   MD5(CONCAT_WS(':', x.views_before, x.views, x.views_after)),
+                   NOW()
+              FROM (
+                SELECT l.id_endorse, l.log_date, l.views, l.views_before, l.views_after,
+                       LAG(l.views_after) OVER w AS prev_after,
+                       LAG(l.log_date)    OVER w AS prev_log_date,
+                       e.id_campaign,
+                       REGEXP_SUBSTR(e.link_upload,'[0-9]{15,}') AS content_id
+                  FROM endorse_logs l
+                  JOIN endorse e ON e.id = l.id_endorse
+                 WHERE l.log_date >= {$floorEsc} AND l.log_date <= {$untilEsc}
+                   AND l.views_after > 0 {$scope}
+                WINDOW w AS (PARTITION BY l.id_endorse ORDER BY l.log_date)
+              ) x
+             WHERE x.log_date BETWEEN {$fromEsc} AND {$untilEsc}
+            ON DUPLICATE KEY UPDATE
+                id_campaign = VALUES(id_campaign),
+                content_id = VALUES(content_id),
+                views = VALUES(views),
+                views_before = VALUES(views_before),
+                views_after = VALUES(views_after),
+                prev_after = VALUES(prev_after),
+                prev_log_date = VALUES(prev_log_date),
+                calculation_version = VALUES(calculation_version),
+                source_checksum = VALUES(source_checksum),
+                built_at = VALUES(built_at)
+        ");
+
+        $rows = $this->CI->mymodel->selectWithQuery("
+            SELECT COUNT(*) AS n FROM endorse_daily_metrics_v2
+             WHERE log_date BETWEEN {$fromEsc} AND {$untilEsc}"
+            . ($campaignId !== null ? ' AND id_campaign = ' . intval($campaignId) : '')
+        ) ?: [];
+
+        return intval($rows[0]['n'] ?? 0);
     }
 
     /**

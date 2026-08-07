@@ -377,19 +377,45 @@ final class EndorseAnalyticsV2Test extends TestCase
 
     // ------------------------------------------- 22. the read model cannot write
 
-    /** The V2 read model must never write to endorse_logs. */
+    /**
+     * The V2 path may populate its own additive cache table, but it must never
+     * write to endorse_logs — the historical evidence stays untouched.
+     */
     public function test_read_model_never_writes_to_endorse_logs(): void
     {
         $src = file_get_contents(__DIR__ . '/../application/libraries/Endorse_analytics_read_model.php');
         self::assertIsString($src);
 
-        foreach (['INSERT INTO', 'UPDATE ', 'DELETE FROM', 'REPLACE INTO', 'TRUNCATE', 'ALTER TABLE'] as $verb) {
-            self::assertStringNotContainsString(
-                $verb,
-                strtoupper($src),
-                "V2 read model must never contain a $verb statement"
-            );
+        $upper = strtoupper($src);
+        foreach (['INSERT INTO', 'UPDATE', 'DELETE FROM', 'REPLACE INTO', 'TRUNCATE', 'ALTER TABLE', 'DROP '] as $verb) {
+            $offset = 0;
+            while (($pos = strpos($upper, $verb, $offset)) !== false) {
+                $stmt = substr($upper, $pos, 220);
+                self::assertStringNotContainsString(
+                    'ENDORSE_LOGS',
+                    $stmt,
+                    "V2 must never $verb endorse_logs"
+                );
+                $offset = $pos + 1;
+            }
         }
+
+        // The only table the read model is allowed to write is its own cache.
+        self::assertSame(
+            1,
+            substr_count($upper, 'INSERT INTO'),
+            'exactly one write statement is expected (the derived-table rebuild)'
+        );
+        self::assertStringContainsString('INSERT INTO ENDORSE_DAILY_METRICS_V2', $upper);
+    }
+
+    /** The derived cache must be invalidated when the calculation changes. */
+    public function test_derived_rows_are_scoped_to_a_calculation_version(): void
+    {
+        $src = file_get_contents(__DIR__ . '/../application/libraries/Endorse_analytics_read_model.php');
+
+        self::assertStringContainsString('calculation_version = ', $src, 'reads must filter on version');
+        self::assertStringContainsString('source_checksum = MD5(', $src, 'stale rows must be excluded');
     }
 
     public function test_metric_definitions_are_shipped_with_the_payload(): void
