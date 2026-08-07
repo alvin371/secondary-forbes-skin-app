@@ -955,6 +955,30 @@ class Ajax extends CI_Controller
 			->set_output(json_encode($payload));
 	}
 
+	/** Read-only Analytics V2 data for the endorse cards on the visible list page. */
+	public function get_endorse_cards_v2()
+	{
+		$this->load->helper('env');
+		$mode = strtolower(trim(strval(env('ENDORSE_ANALYTICS_V2', 'off'))));
+		if (!in_array($mode, array('shadow', 'on'), true)) {
+			return $this->output->set_status_header(410)->set_content_type('application/json', 'utf-8')
+				->set_output(json_encode(array('enabled' => false)));
+		}
+
+		$get = $this->input->get(null) ?: array();
+		require_once APPPATH . 'libraries/Endorse_analytics_read_model.php';
+		$ids = Endorse_analytics_v2::int_list($get['ids'] ?? '');
+		if (empty($ids)) {
+			return $this->output->set_content_type('application/json', 'utf-8')
+				->set_output(json_encode(array('enabled' => true, 'cards' => array())));
+		}
+		$model = new Endorse_analytics_read_model();
+		return $this->output->set_content_type('application/json', 'utf-8')->set_output(json_encode(array(
+			'enabled' => true,
+			'cards' => $model->build_post_cards($get, $ids),
+		)));
+	}
+
 
 	private function calculateChartMax($max_value) {
 		if ($max_value <= 0) {

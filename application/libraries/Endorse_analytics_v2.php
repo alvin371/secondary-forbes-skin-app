@@ -808,7 +808,8 @@ class Endorse_analytics_v2
     }
 
     /** Coerce a scalar or array of ids into a list of positive ints. */
-    private static function int_list($value): array
+    /** Coerce a comma-separated or array request field into unique positive IDs. */
+    public static function int_list($value): array
     {
         if ($value === null || $value === '') {
             return [];

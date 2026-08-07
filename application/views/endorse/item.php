@@ -6,6 +6,8 @@ function separator_only($angka) {
 }
 
 $view = isset($_GET['view']) ? $_GET['view'] : 'card';
+$this->load->helper('env');
+$analytics_v2_cards_enabled = in_array(strtolower(trim(strval(env('ENDORSE_ANALYTICS_V2', 'off')))), ['shadow', 'on'], true);
 
 if ($view == 'table') {
     // TABLE VIEW
@@ -747,6 +749,13 @@ if ($view == 'table') {
             <div class="col-lg-12">
                 <hr>
             </div>
+            <?php if ($analytics_v2_cards_enabled): ?>
+            <div class="col-lg-12">
+                <section class="endorse-v2-metric" data-endorse-metric="<?= $v['id'] ?>" aria-live="polite">
+                    <span class="text-muted small"><i class="fa fa-circle-o-notch fa-spin"></i> Memuat data sinkronisasi…</span>
+                </section>
+            </div>
+            <?php endif; ?>
             <div class="col-lg-12">
                 <div class="row">
                     <div class="col-md-4">
@@ -849,6 +858,13 @@ if ($view == 'table') {
 ?>
 
 <style>
+.endorse-v2-metric { background:#f8fafc; border:1px solid #d9e0e7; border-radius:10px; padding:12px; margin-bottom:12px; }
+.endorse-v2-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
+.endorse-v2-label { display:block; color:#536273; font-size:11px; font-weight:600; margin-bottom:3px; }
+.endorse-v2-value { color:#17212b; font-size:18px; font-weight:700; }
+.endorse-v2-meta { color:#536273; font-size:12px; line-height:1.5; }
+.endorse-v2-alert { margin-top:10px; padding:8px 10px; border-radius:7px; background:#fff3cd; color:#664d03; font-size:12px; }
+.endorse-v2-alert.danger { background:#fbe0e1; color:#842029; }
 .tippy-box[data-theme~='light'] {
     background-color: #ffffff !important;
     color: #333333 !important;
@@ -864,6 +880,53 @@ if ($view == 'table') {
     color: inherit !important;
 }
 </style>
+
+<?php if ($analytics_v2_cards_enabled && $view === 'card'): ?>
+<script>
+(function () {
+    function angka(v, plus) { return (plus && Number(v) > 0 ? '+' : '') + Number(v || 0).toLocaleString('id-ID'); }
+    function aman(v) { return $('<div>').text(v || '').html(); }
+    function amanAtribut(v) { return String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+    function detailGagal(f) {
+        if (!f) return '';
+        return '<div class="endorse-v2-alert danger"><strong>Alasan kegagalan</strong><br>' + aman(f.alasan) +
+            '<br>Terakhir mencoba: ' + aman(f.terakhir_mencoba_label || 'Tidak tersedia') +
+            '<br>Jumlah percobaan: ' + angka(f.jumlah_percobaan) + ' kali' +
+            (f.pesan_teknis ? '<br><button type="button" class="btn btn-link btn-sm p-0 endorse-v2-detail">Lihat pesan teknis</button><span class="d-none endorse-v2-technical"><br>Pesan teknis: ' + aman(f.pesan_teknis) + '</span>' : '') + '</div>';
+    }
+    function renderCard($box, d) {
+        var gagal = d.status_sinkronisasi === 'gagal' || d.status_sinkronisasi === 'belum_pernah_berhasil';
+        var totalLabel = gagal ? 'Total Views Terakhir Diketahui' : 'Total Views Terakhir Disinkronkan';
+        var duplicateUrl = '<?= base_url() ?>endorse/list?id_campaign=' + encodeURIComponent(d.id_campaign || '') + '&pic=' + encodeURIComponent(d.pic || '') + '&content_id=' + encodeURIComponent(d.content_id || '');
+        var html = '<div class="endorse-v2-grid"><div><span class="endorse-v2-label">' + totalLabel + '</span><span class="endorse-v2-value">' + angka(d.total_views_terakhir_disinkronkan) + '</span></div>' +
+            '<div><span class="endorse-v2-label">Kenaikan dari Hari Sebelumnya</span><span class="endorse-v2-value">' + angka(d.kenaikan_views, true) + '</span></div>' +
+            '<div><span class="endorse-v2-label">Terakhir Disinkronkan</span><span class="endorse-v2-meta">' + aman(d.sinkronisasi_terakhir_label || 'Belum pernah berhasil disinkronkan') + '</span></div>' +
+            '<div><span class="endorse-v2-label">Status Sinkronisasi</span><span class="endorse-v2-meta">' + aman(d.status_label) + '</span></div></div>';
+        if (d.menggunakan_data_terakhir) html += '<div class="endorse-v2-alert">Nilai menggunakan hasil sinkronisasi terakhir yang berhasil.</div>';
+        if (gagal) html += detailGagal(d.failure);
+        if (d.has_duplicate) html += '<div class="endorse-v2-alert">⚠ Duplikat terdeteksi. Content ID ini tercatat pada ' + angka(d.duplicate_row_count) + ' data postingan. <a href="' + duplicateUrl + '">Lihat Data Duplikat</a></div>';
+        if (d.memiliki_anomali) html += '<div class="endorse-v2-alert danger">⚠ Anomali data. Total views hasil sinkronisasi lebih rendah dari data sebelumnya. <button type="button" class="btn btn-link btn-sm p-0 endorse-v2-detail">Lihat Detail</button><span class="d-none endorse-v2-technical"><br>Selisih asli: ' + angka(d.selisih_negatif) + '</span></div>';
+        if (d.link_postingan) html += '<a class="small" target="_blank" rel="noopener" href="' + amanAtribut(d.link_postingan) + '">Lihat Postingan</a>';
+        $box.html(html);
+    }
+    function muatMetricV2() {
+        var ids = $('[data-endorse-metric]').map(function(){ return $(this).data('endorse-metric'); }).get();
+        if (!ids.length) return;
+        var p = new URLSearchParams(window.location.search);
+        p.set('ids', ids.join(','));
+        p.set('start_date', $('#chart_start_date').val() || p.get('chart_start_date') || p.get('start_date') || '');
+        p.set('until_date', $('#chart_until_date').val() || p.get('chart_until_date') || p.get('until_date') || '');
+        $.getJSON('<?= base_url() ?>ajax/get-endorse-cards-v2?' + p.toString()).done(function(res) {
+            $.each(res.cards || {}, function(id, d) { renderCard($('[data-endorse-metric="' + id + '"]'), d); });
+        }).fail(function(xhr) {
+            if (xhr.status !== 410) $('[data-endorse-metric]').html('<span class="text-danger small">Gagal memuat data sinkronisasi.</span>');
+        });
+    }
+    $(document).on('click', '.endorse-v2-detail', function(){ $(this).siblings('.endorse-v2-technical').toggleClass('d-none'); });
+    $(muatMetricV2);
+})();
+</script>
+<?php endif; ?>
 
 <script>
     function sortTable(column, order) {
