@@ -782,6 +782,12 @@ if ($view == 'table') {
                         <?php endif; ?>
                     </div>
                     <div class="col-md-4">
+                        <?php if ($analytics_v2_cards_enabled): ?>
+                        <p class="mb-1 text-black fw-600">CPM : <?= separator_only($v['cpm']) ?></p>
+                        <p class="mb-1 text-black">Likes : <?= separator_only($v['likes']) ?></p>
+                        <p class="mb-1 text-black">Comments : <?= separator_only($v['comment']) ?></p>
+                        <p class="mb-1 text-black">Save &amp; Share : <?= separator_only($v['share_save']) ?></p>
+                        <?php endif; ?>
                         <p class="mb-1 text-black">Link Brief : <br><?= $v['link_brief'] ?></p>
                         <p class="mb-1 text-black">
                             Link MOU : <br>
