@@ -20,6 +20,22 @@ class Endorse_sync
     const ERR_INFRA_TLS = 'infra_tls';
     const ERR_INFRA_STALL = 'infra_stall';
     const ERR_CONFIG    = 'config';
+    const ERR_DATA_QUALITY = 'data_quality';
+
+    /**
+     * Normalized provider messages meaning "this content cannot be resolved".
+     * Matched against a punctuation-stripped, lowercased message so wording
+     * tweaks on the provider side do not silently reopen the retry loop.
+     */
+    const PROVIDER_UNRESOLVABLE_PATTERNS = [
+        'url parsing is failed',
+        'url parsing failed',
+        'cannot parse url',
+        'invalid url',
+        'content not found',
+        'video not found',
+        'item not found',
+    ];
 
     /** @var CI_Controller */
     protected $CI;
@@ -27,7 +43,60 @@ class Endorse_sync
     public static function is_terminal_class(string $errorClass): bool
     {
         return $errorClass === self::ERR_PERMANENT
-            || $errorClass === self::ERR_EMPTY;
+            || $errorClass === self::ERR_EMPTY
+            || $errorClass === self::ERR_DATA_QUALITY;
+    }
+
+    /**
+     * Normalize a provider message for matching: lowercase, then collapse every
+     * run of non-alphanumeric characters to a single space. Keeps matching
+     * stable across casing and punctuation ("Url parsing is failed! Please check url.").
+     */
+    public static function normalize_provider_message($message): string
+    {
+        $text = strtolower(trim((string) $message));
+        return trim((string) preg_replace('/[^a-z0-9]+/', ' ', $text));
+    }
+
+    /**
+     * True when the transport succeeded but the provider reported, at the
+     * application level, that it cannot resolve the requested content.
+     *
+     * Deliberately narrow. It requires a 2xx transport, no cURL error, and a
+     * non-success provider code, so rate limits (429), upstream outages (5xx)
+     * and connection failures keep falling through to the transient path.
+     */
+    public static function is_provider_unresolvable(array $response): bool
+    {
+        $meta = is_array($response['error_meta'] ?? null) ? $response['error_meta'] : [];
+
+        if (intval($meta['curl_errno'] ?? 0) !== 0) {
+            return false;
+        }
+
+        $httpCode = intval($meta['http_code'] ?? 0);
+        if ($httpCode < 200 || $httpCode > 299) {
+            return false;
+        }
+
+        $providerCode = trim(strval($meta['rapidapi_code'] ?? ''));
+        if ($providerCode === '' || $providerCode === 'n/a' || $providerCode === '0') {
+            return false;
+        }
+
+        foreach ([$meta['rapidapi_msg'] ?? '', $response['upstream_msg'] ?? '', $response['msg'] ?? ''] as $raw) {
+            $text = self::normalize_provider_message($raw);
+            if ($text === '') {
+                continue;
+            }
+            foreach (self::PROVIDER_UNRESOLVABLE_PATTERNS as $pattern) {
+                if (strpos($text, $pattern) !== false) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     public function __construct()
@@ -75,6 +144,17 @@ class Endorse_sync
 
         $msg = strval($response['msg'] ?? '');
         $machineClass = strval($response['error_class'] ?? '');
+
+        // Checked before the machine-class passthrough below: the transport layer
+        // defaults every RapidAPI failure to 'transient', so an application-level
+        // "cannot resolve this content" answer would otherwise be retried on every
+        // attempt of every cycle — paid calls that can never succeed.
+        if (self::is_provider_unresolvable($response)) {
+            return [
+                'class' => self::ERR_DATA_QUALITY,
+                'msg' => $msg ?: 'Konten tidak dapat diresolusi oleh provider',
+            ];
+        }
 
         if (in_array($machineClass, [
             self::ERR_INFRA,
@@ -281,11 +361,55 @@ class Endorse_sync
 
         $this->upsert_daily_log_row($logRow, $user_id);
 
+        // Additive append-only observation record. Disabled by default; failure
+        // here must never affect the sync result, which is the authoritative
+        // path. Nothing reads this table yet.
+        $this->record_stats_snapshot($id_endorse, $stats, $response, $platform);
+
         return [
             'status'      => true,
             'error_class' => self::ERR_OK,
             'msg'         => 'OK',
         ];
+    }
+
+    /**
+     * Append one immutable snapshot of a trustworthy provider success.
+     *
+     * Guarded by ENDORSE_SNAPSHOTS_WRITE so it can be enabled independently of
+     * the analytics rollout. Never updates or deletes; never throws upward.
+     */
+    protected function record_stats_snapshot(int $id_endorse, array $stats, array $response, string $platform): void
+    {
+        $this->CI->load->helper('env');
+        if (env('ENDORSE_SNAPSHOTS_WRITE', '0') !== '1') {
+            return;
+        }
+
+        try {
+            $db = $this->CI->db;
+            if (!$db->table_exists('endorse_stats_snapshots')) {
+                return;
+            }
+
+            $now = date('Y-m-d H:i:s');
+            $db->insert('endorse_stats_snapshots', [
+                'id_endorse'   => $id_endorse,
+                'content_id'   => strval($response['data']['content_id'] ?? ''),
+                'observed_at'  => $now,
+                'views'        => intval($stats['views'] ?? 0),
+                'likes'        => intval($stats['likes'] ?? 0),
+                'comment'      => intval($stats['comment'] ?? 0),
+                'share_save'   => intval($stats['share_save'] ?? 0),
+                'provider'     => $platform,
+                'queue_id'     => isset($response['queue_id']) ? intval($response['queue_id']) : null,
+                'attempt_id'   => isset($response['attempt_id']) ? intval($response['attempt_id']) : null,
+                'result_class' => self::ERR_OK,
+                'created_at'   => $now,
+            ]);
+        } catch (Throwable $e) {
+            log_message('error', 'endorse_stats_snapshots insert failed: ' . $e->getMessage());
+        }
     }
 
     public function apply_snapshot(array $endorse, array $response, string $purpose, int $user_id): array
