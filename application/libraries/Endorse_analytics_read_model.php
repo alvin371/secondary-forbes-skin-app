@@ -32,61 +32,146 @@ class Endorse_analytics_read_model
      * Build the full V2 payload for a set of request filters.
      *
      * @param array  $get        Request parameters (same names the legacy chart uses).
-     * @param string $population Endorse_analytics_v2::POPULATION_RAW|POPULATION_CANONICAL
+     * @param string $population Retained for endpoint compatibility. Analytics
+     *                            V2 always calculates the confirmed canonical
+     *                            population (one content ID per campaign/PIC).
      * @return array {dates, summary, metric_definition, meta}
      */
-    public function build(array $get, string $population = Endorse_analytics_v2::POPULATION_RAW): array
+    public function build(array $get, string $population = Endorse_analytics_v2::POPULATION_CANONICAL): array
     {
         $filters = Endorse_analytics_v2::build_filters($get, [$this->CI->db, 'escape_str']);
         $from = $filters['from'];
         $until = $filters['until'];
 
         $rows = $this->load_observations($filters);
-        $endorseIds = array_values(array_unique(array_map(function ($r) {
-            return intval($r['id_endorse']);
-        }, $rows)));
-
         $duplicates = $this->duplicate_content_ids($filters);
         $scopePosts = $this->scope_posts($filters);
-        $unresolvedIds = $this->unresolved_endorse_ids(
-            array_values(array_unique(array_merge($endorseIds, array_keys($scopePosts))))
-        );
-
-        // Annotate rows so the pure core can reproduce the repair planner's
-        // category gates without touching the database itself.
-        foreach ($rows as $i => $r) {
-            $rows[$i]['is_duplicate'] = isset($duplicates[strval($r['content_id'])]);
-            $rows[$i]['is_unresolved'] = isset($unresolvedIds[intval($r['id_endorse'])]);
-        }
-
         $dateList = Endorse_analytics_v2::date_range($from, $until);
 
-        $ctx = [
-            'dates' => $dateList,
-            'duplicate_content_ids' => $duplicates,
-            'unresolved_by_date' => $this->unresolved_by_date($rows, $scopePosts, $dateList),
-            'carried_by_date' => $this->carried_by_date($rows, $dateList),
-        ];
-
-        $buckets = Endorse_analytics_v2::fold_dates($rows, $ctx);
+        // The pure core owns all arithmetic. This adapter only turns immutable
+        // snapshots into one deterministic series per canonical content.
+        $series = $this->canonical_series($rows, $scopePosts, $dateList);
+        $buckets = Endorse_analytics_v2::aggregate_dates($series, $dateList, [
+            'sync_times' => $this->sync_times($rows),
+            'duplicate_groups' => $this->duplicate_groups_by_date($duplicates, $dateList),
+            'duplicate_rows' => $this->duplicate_rows_by_date($duplicates, $dateList),
+        ]);
         $dates = array_values($buckets);
-        $summary = Endorse_analytics_v2::summarize($dates, $population);
-        $summary['duplicate_group_count'] = count($duplicates);
+        $summary = Endorse_analytics_v2::summarize($dates, !empty($filters['has_date_filter']));
+        $summary['jumlah_grup_duplikat'] = count($duplicates);
+        $summary['jumlah_baris_duplikat'] = array_sum($duplicates);
+
+        $meta = [
+            'versi_kalkulasi' => Endorse_analytics_v2::CALCULATION_VERSION,
+            'populasi' => Endorse_analytics_v2::POPULATION_CANONICAL,
+            'dari' => $from,
+            'sampai' => $until,
+            'rentang_inklusif' => true,
+            'kolom_sumber' => 'endorse_logs.views_after',
+            'jumlah_baris_observasi' => count($rows),
+            'pencocokan_pic' => $filters['pic_mode'],
+        ];
 
         return [
-            'dates' => $dates,
+            // Indonesian fields are the V2 contract. English aliases are
+            // additive while the rollout UI is being switched over.
+            'ringkasan' => $summary,
+            'harian' => $dates,
+            'definisi_metrik' => Endorse_analytics_v2::definisi_metrik(),
+            'meta' => $meta,
             'summary' => $summary,
-            'metric_definition' => Endorse_analytics_v2::metric_definitions(),
-            'meta' => [
-                'calculation_version' => Endorse_analytics_v2::CALCULATION_VERSION,
-                'population' => $population,
-                'from' => $from,
-                'until' => $until,
-                'range_inclusive' => true,
-                'source_column' => 'endorse_logs.views_after',
-                'observation_row_count' => count($rows),
-            ],
+            'dates' => $dates,
+            'metric_definition' => Endorse_analytics_v2::definisi_metrik(),
         ];
+    }
+
+    /** Build one stable daily series for every canonical campaign/PIC/content. */
+    private function canonical_series(array $rows, array $scopePosts, array $dates): array
+    {
+        $items = [];
+        foreach ($scopePosts as $id => $post) {
+            $key = $this->canonical_key($post, $id);
+            if (!isset($items[$key])) {
+                $items[$key] = ['entered' => $post['entered'], 'raw_ids' => []];
+            }
+            $items[$key]['raw_ids'][] = intval($id);
+            if ($post['entered'] !== '' && ($items[$key]['entered'] === '' || $post['entered'] < $items[$key]['entered'])) {
+                $items[$key]['entered'] = $post['entered'];
+            }
+        }
+
+        $byRaw = [];
+        foreach ($rows as $row) {
+            $id = intval($row['id_endorse']);
+            $byRaw[$id][] = $row;
+            $fallback = ['content_id' => $row['content_id'] ?? '', 'id_campaign' => $row['id_campaign'] ?? 0,
+                'pic' => $row['pic'] ?? '', 'entered' => $row['log_date'] ?? ''];
+            $key = $this->canonical_key($fallback, $id);
+            if (!isset($items[$key])) $items[$key] = ['entered' => $fallback['entered'], 'raw_ids' => [$id]];
+        }
+
+        $out = [];
+        $firstReportingDate = $dates[0] ?? '';
+        foreach ($items as $key => $item) {
+            sort($item['raw_ids'], SORT_NUMERIC);
+            // A duplicate group contributes only its smallest raw endorse ID.
+            // This is deterministic and leaves every raw row untouched.
+            $sourceId = $item['raw_ids'][0] ?? 0;
+            $observations = [];
+            $prior = null;
+            $everBefore = false;
+            foreach ($byRaw[$sourceId] ?? [] as $row) {
+                $d = strval($row['log_date']);
+                // The selected date window still needs the last trustworthy
+                // value from before it. Keep it as the predecessor rather than
+                // assigning its accumulated history to the first displayed day.
+                if ($firstReportingDate !== '' && $d < $firstReportingDate) {
+                    $prior = intval($row['views_after']);
+                    $everBefore = true;
+                    continue;
+                }
+                if (!in_array($d, $dates, true)) continue;
+                $observations[$d] = intval($row['views_after']);
+                if ($prior === null && isset($row['prev_after']) && $row['prev_after'] !== null) {
+                    $prior = intval($row['prev_after']);
+                    $everBefore = true;
+                }
+            }
+            $out[$key] = Endorse_analytics_v2::build_content_series(
+                $observations, $dates, $item['entered'] ?: null, $prior, $everBefore
+            );
+        }
+        return $out;
+    }
+
+    private function canonical_key(array $post, int $fallbackId): string
+    {
+        $content = trim(strval($post['content_id'] ?? ''));
+        if ($content === '') $content = 'raw:' . $fallbackId;
+        return intval($post['id_campaign'] ?? 0) . '|' . strval($post['pic'] ?? '') . '|' . $content;
+    }
+
+    private function sync_times(array $rows): array
+    {
+        $out = [];
+        foreach ($rows as $row) {
+            $d = strval($row['log_date'] ?? '');
+            $at = strval($row['updated_at'] ?? $row['created_at'] ?? '');
+            if ($d === '' || $at === '') continue;
+            if (!isset($out[$d]['terbaru']) || $at > $out[$d]['terbaru']) $out[$d]['terbaru'] = $at;
+            if (!isset($out[$d]['terlama']) || $at < $out[$d]['terlama']) $out[$d]['terlama'] = $at;
+        }
+        return $out;
+    }
+
+    private function duplicate_groups_by_date(array $duplicates, array $dates): array
+    {
+        return array_fill_keys($dates, count($duplicates));
+    }
+
+    private function duplicate_rows_by_date(array $duplicates, array $dates): array
+    {
+        return array_fill_keys($dates, array_sum($duplicates));
     }
 
     // ------------------------------------------------------------------ loading
@@ -125,13 +210,8 @@ class Endorse_analytics_read_model
         $where = $filters['where'];
         $from = $this->CI->db->escape($filters['from']);
         $until = $this->CI->db->escape($filters['until']);
-        $floor = $this->CI->db->escape(
-            date('Y-m-d', strtotime($filters['from'] . ' -' . $this->lookback_days() . ' days'))
-        );
-
         $inner = array_merge($where, [
             'l.log_date <= ' . $until,
-            'l.log_date >= ' . $floor,
         ]);
         // Only trustworthy cumulative observations participate. A row with no
         // positive close is not evidence that the post has zero views.
@@ -140,6 +220,7 @@ class Endorse_analytics_read_model
         $sql = "
             SELECT x.* FROM (
                 SELECT l.id, l.id_endorse, l.log_date, l.views, l.views_before, l.views_after,
+                       l.created_at, l.updated_at,
                        LAG(l.views_after) OVER w AS prev_after,
                        LAG(l.log_date)    OVER w AS prev_log_date,
                        e.id_campaign, e.pic,
@@ -152,7 +233,7 @@ class Endorse_analytics_read_model
                  WHERE " . implode(' AND ', $inner) . "
                 WINDOW w AS (PARTITION BY l.id_endorse ORDER BY l.log_date)
             ) x
-            WHERE x.log_date BETWEEN {$from} AND {$until}
+            WHERE x.log_date <= {$until}
             ORDER BY x.id_endorse ASC, x.log_date ASC
         ";
 
@@ -188,13 +269,14 @@ class Endorse_analytics_read_model
 
         $sql = "
             SELECT m.id_endorse, m.log_date, m.views, m.views_before, m.views_after,
+                   l.created_at, l.updated_at,
                    m.prev_after, m.prev_log_date, m.id_campaign, m.content_id,
                    e.pic, c.is_internal
               FROM endorse_daily_metrics_v2 m
               JOIN endorse e          ON e.id = m.id_endorse
               JOIN endorse_campaign c ON c.id = e.id_campaign
               JOIN endorse_logs l     ON l.id_endorse = m.id_endorse AND l.log_date = m.log_date
-             WHERE m.log_date BETWEEN {$from} AND {$until}
+             WHERE m.log_date <= {$until}
                AND m.calculation_version = " . $this->CI->db->escape(Endorse_analytics_v2::CALCULATION_VERSION) . "
                AND m.source_checksum = MD5(CONCAT_WS(':', l.views_before, l.views, l.views_after))
                " . (empty($where) ? '' : ' AND ' . implode(' AND ', $where)) . "
@@ -283,18 +365,19 @@ class Endorse_analytics_read_model
         $where[] = "e.status = 'Aktif'";
 
         $sql = "
-            SELECT REGEXP_SUBSTR(e.link_upload,'[0-9]{15,}') AS cid, COUNT(*) AS n
+            SELECT e.id_campaign, e.pic, REGEXP_SUBSTR(e.link_upload,'[0-9]{15,}') AS cid, COUNT(*) AS n
               FROM endorse e
               JOIN endorse_campaign c ON c.id = e.id_campaign
              WHERE " . implode(' AND ', $where) . "
-             GROUP BY cid
+             GROUP BY e.id_campaign, e.pic, cid
             HAVING COUNT(*) > 1 AND cid IS NOT NULL AND cid <> ''
         ";
 
         $rows = $this->CI->mymodel->selectWithQuery($sql) ?: [];
         $out = [];
         foreach ($rows as $r) {
-            $out[strval($r['cid'])] = intval($r['n']);
+            $key = intval($r['id_campaign']) . '|' . strval($r['pic']) . '|' . strval($r['cid']);
+            $out[$key] = intval($r['n']);
         }
         return $out;
     }
@@ -361,7 +444,8 @@ class Endorse_analytics_read_model
         $where[] = "e.link_upload <> ''";
 
         $sql = "
-            SELECT e.id, DATE(e.posting_at) AS entered
+            SELECT e.id, DATE(e.posting_at) AS entered, e.id_campaign, e.pic,
+                   REGEXP_SUBSTR(e.link_upload,'[0-9]{15,}') AS content_id
               FROM endorse e
               JOIN endorse_campaign c ON c.id = e.id_campaign
              WHERE " . implode(' AND ', $where);
@@ -369,7 +453,12 @@ class Endorse_analytics_read_model
         $rows = $this->CI->mymodel->selectWithQuery($sql) ?: [];
         $out = [];
         foreach ($rows as $r) {
-            $out[intval($r['id'])] = strval($r['entered'] ?? '');
+            $out[intval($r['id'])] = [
+                'entered' => strval($r['entered'] ?? ''),
+                'id_campaign' => intval($r['id_campaign'] ?? 0),
+                'pic' => strval($r['pic'] ?? ''),
+                'content_id' => strval($r['content_id'] ?? ''),
+            ];
         }
         return $out;
     }

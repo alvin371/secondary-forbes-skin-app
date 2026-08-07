@@ -919,10 +919,9 @@ class Ajax extends CI_Controller
 
 		require_once APPPATH . 'libraries/Endorse_analytics_read_model.php';
 
-		$population = strtolower(trim(strval(env('ENDORSE_ANALYTICS_V2_POPULATION', 'raw'))));
-		if ($population !== Endorse_analytics_v2::POPULATION_CANONICAL) {
-			$population = Endorse_analytics_v2::POPULATION_RAW;
-		}
+		// V2 is intentionally canonical. The legacy endpoint remains untouched
+		// for rollback; allowing raw rows here would violate the confirmed rule.
+		$population = Endorse_analytics_v2::POPULATION_CANONICAL;
 
 		$model = new Endorse_analytics_read_model();
 
@@ -936,19 +935,16 @@ class Ajax extends CI_Controller
 		if ($mode === 'shadow') {
 			$legacy = $model->legacy_daily_views($get);
 			$comparison = array();
-			foreach ($payload['dates'] as $d) {
-				$date = $d['date'];
+			foreach ($payload['harian'] as $d) {
+				$date = $d['tanggal'];
 				$legacyValue = isset($legacy[$date]) ? intval($legacy[$date]) : 0;
 				$comparison[] = array(
-					'date' => $date,
+					'tanggal' => $date,
 					'legacy_views' => $legacyValue,
-					'v2_observed_daily_growth' => $d['observed_daily_growth'],
-					'v2_total_observed_views' => $d['total_observed_views'],
+					'v2_kenaikan_views' => $d['kenaikan_views'],
+					'v2_total_views_terakhir_disinkronkan' => $d['total_views_terakhir_disinkronkan'],
 					'v2_opening_views' => $d['opening_views'],
-					'repair_parity_views' => $d['repair_parity_views'],
-					'difference' => $d['observed_daily_growth'] === null
-						? null
-						: intval($d['observed_daily_growth']) - $legacyValue,
+					'selisih_dengan_legacy' => intval($d['kenaikan_views']) - $legacyValue,
 				);
 			}
 			$payload['meta']['legacy_comparison'] = $comparison;
