@@ -18,6 +18,9 @@
     .v2-card .v2-value { font-size: 24px; font-weight: 600; line-height: 1.2; }
     .v2-card .v2-sub { font-size: 11px; color: #6c757d; }
     .v2-card .v2-meta { font-size: 11px; color: #6c757d; margin-top: .35rem; }
+    .v2-card .v2-delta { font-size: 12px; font-weight: 600; margin-top: .15rem; }
+    .v2-card .v2-up { color: #0f5132; }
+    .v2-card .v2-down { color: #842029; }
     .v2-badge { font-size: 10px; padding: .1rem .4rem; border-radius: .25rem; font-weight: 600; }
     .v2-badge-complete { background: #d1e7dd; color: #0f5132; }
     .v2-badge-partial { background: #fff3cd; color: #664d03; }
@@ -49,6 +52,7 @@
                     <div class="v2-label">Total Views</div>
                     <div class="v2-value" id="v2-total-views">&mdash;</div>
                     <div class="v2-sub" id="v2-total-views-sub">Terakhir teramati</div>
+                    <div class="v2-delta" id="v2-total-views-delta"></div>
                     <div class="v2-meta" id="v2-total-views-meta"></div>
                 </div>
             </div>
@@ -58,7 +62,7 @@
                     <div class="v2-label">Pertumbuhan Views</div>
                     <div class="v2-value" id="v2-growth">&mdash;</div>
                     <div class="v2-sub" id="v2-growth-sub"></div>
-                    <div class="v2-meta">Selisih observasi kumulatif per konten.</div>
+                    <div class="v2-meta" id="v2-growth-meta"></div>
                 </div>
             </div>
             <!-- Card C — Opening views -->
@@ -67,7 +71,7 @@
                     <div class="v2-label">Opening Views</div>
                     <div class="v2-value" id="v2-opening">&mdash;</div>
                     <div class="v2-sub">Sudah ada saat observasi pertama</div>
-                    <div class="v2-meta">Bukan pertumbuhan yang diperoleh pada hari tersebut.</div>
+                    <div class="v2-meta" id="v2-opening-meta"></div>
                 </div>
             </div>
             <!-- Card D — Data coverage -->
@@ -107,23 +111,69 @@
             var s = payload.summary || {};
             var until = (payload.meta && payload.meta.until) || '';
             var from = (payload.meta && payload.meta.from) || '';
+            var observed = s.latest_observed_date || until;
 
+            // --- Card A: Total Views, with the day-over-day change ---
             $('#v2-total-views').text(fmt(s.total_views_at_end_date));
-            $('#v2-total-views-sub').text('Terakhir teramati pada ' + until);
+            $('#v2-total-views-sub').text('Terakhir teramati pada ' + observed);
+
+            if (s.total_views_change_vs_previous_day === null || s.total_views_change_vs_previous_day === undefined) {
+                $('#v2-total-views-delta').html('<span class="text-muted">Belum ada hari pembanding</span>');
+            } else {
+                var chg = Number(s.total_views_change_vs_previous_day);
+                var cls = chg < 0 ? 'v2-down' : 'v2-up';
+                $('#v2-total-views-delta').html(
+                    '<span class="' + cls + '">' + (chg < 0 ? '' : '+') + fmt(chg) + '</span>' +
+                    ' <span class="text-muted">vs ' + s.previous_observed_date + '</span>'
+                );
+            }
+
+            // The cumulative total moves by growth AND by opening views of any
+            // content that joined the population. Spelling that out stops the
+            // number being misread as daily growth.
             $('#v2-total-views-meta').html(
-                fmt(s.included_post_count) + ' konten diikutkan &middot; ' +
+                (s.total_views_change_vs_previous_day === null || s.total_views_change_vs_previous_day === undefined
+                    ? ''
+                    : fmt(s.latest_daily_growth) + ' pertumbuhan + ' + fmt(s.latest_opening_views) + ' opening<br>') +
+                fmt(s.included_post_count) + ' konten &middot; ' +
                 fmt(s.unresolved_post_count) + ' belum teridentifikasi'
             );
 
+            // --- Card B: growth over the period, with per-day context ---
             $('#v2-growth').text(fmt(s.growth_in_selected_period));
             $('#v2-growth-sub').text(from + ' s/d ' + until);
 
-            $('#v2-opening').text(fmt(s.opening_views_in_selected_period));
+            var growthMeta = [];
+            if (s.observed_day_count > 0) {
+                growthMeta.push('&#8960; ' + fmt(s.average_daily_growth) + ' / hari' +
+                    ' <span class="text-muted">(' + s.observed_day_count + ' hari teramati)</span>');
+            }
+            if (s.peak_daily_growth_date) {
+                growthMeta.push('Tertinggi ' + s.peak_daily_growth_date + ': ' + fmt(s.peak_daily_growth));
+            }
+            $('#v2-growth-meta').html(growthMeta.join('<br>') || 'Belum ada hari teramati.');
 
+            // --- Card C: opening views, with the latest day's contribution ---
+            $('#v2-opening').text(fmt(s.opening_views_in_selected_period));
+            $('#v2-opening-meta').html(
+                (s.latest_observed_date
+                    ? observed + ': ' + fmt(s.latest_opening_views) + '<br>'
+                    : '') +
+                'Bukan pertumbuhan yang diperoleh pada hari tersebut.'
+            );
+
+            // --- Card D: coverage, broken down per day ---
+            var dayCounts = s.completeness_day_counts || {};
             $('#v2-coverage').text(fmt(s.included_post_count));
             $('#v2-coverage-meta').html(
                 fmt(s.unresolved_post_count) + ' belum teridentifikasi &middot; ' +
-                fmt(s.duplicate_group_count) + ' grup duplikat<br>' + badge(s.data_completeness)
+                fmt(s.duplicate_group_count) + ' grup duplikat<br>' +
+                badge(s.data_completeness) + ' ' +
+                '<span class="text-muted">' +
+                    (dayCounts.complete || 0) + ' lengkap &middot; ' +
+                    (dayCounts.partial || 0) + ' sebagian &middot; ' +
+                    (dayCounts.insufficient || 0) + ' kurang' +
+                '</span>'
             );
 
             var notes = [];
