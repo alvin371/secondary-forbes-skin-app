@@ -749,13 +749,6 @@ if ($view == 'table') {
             <div class="col-lg-12">
                 <hr>
             </div>
-            <?php if ($analytics_v2_cards_enabled): ?>
-            <div class="col-lg-12">
-                <section class="endorse-v2-metric" data-endorse-metric="<?= $v['id'] ?>" aria-live="polite">
-                    <span class="text-muted small"><i class="fa fa-circle-o-notch fa-spin"></i> Memuat data sinkronisasi…</span>
-                </section>
-            </div>
-            <?php endif; ?>
             <div class="col-lg-12">
                 <div class="row">
                     <div class="col-md-4">
@@ -774,6 +767,11 @@ if ($view == 'table') {
                         <p class="mb-1">Ads : <?= $v['kode_ads'] ?></p>
                     </div>
                     <div class="col-md-4">
+                        <?php if ($analytics_v2_cards_enabled): ?>
+                        <section class="endorse-v2-metric" data-endorse-metric="<?= $v['id'] ?>" aria-live="polite">
+                            <span class="text-muted small"><i class="fa fa-circle-o-notch fa-spin"></i> Memuat data sinkronisasi…</span>
+                        </section>
+                        <?php else: ?>
                         <p class="mb-1 text-black fw-600">Views : <?= separator_only($v['views']) ?></p>
                         <p class="mb-1 text-black fw-600">CPM : <?= separator_only($v['cpm']) ?></p>
                         <p class="mb-1 text-black">Likes : <?= separator_only($v['likes']) ?></p>
@@ -781,6 +779,7 @@ if ($view == 'table') {
                         <p class="mb-1 text-black">Save & Share : <?= separator_only($v['share_save']) ?></p>
                         <p class="mb-1 text-black">Tanggal Dibuat : <?= $v['created_at'] ?></p>
                         <p class="mb-1 text-black">Tanggal Diupdate : <?= $v['sync_at'] ?></p>
+                        <?php endif; ?>
                     </div>
                     <div class="col-md-4">
                         <p class="mb-1 text-black">Link Brief : <br><?= $v['link_brief'] ?></p>
@@ -857,14 +856,27 @@ if ($view == 'table') {
 }
 ?>
 
+<?php if ($analytics_v2_cards_enabled && $view === 'card'): ?>
+<div class="modal fade" id="endorse-v2-issue-modal" tabindex="-1" aria-labelledby="endorse-v2-issue-title" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="endorse-v2-issue-title">Check Issue</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Tutup"></button>
+            </div>
+            <div class="modal-body" id="endorse-v2-issue-content"></div>
+            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Tutup</button></div>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
+
 <style>
-.endorse-v2-metric { background:#f8fafc; border:1px solid #d9e0e7; border-radius:10px; padding:12px; margin-bottom:12px; }
-.endorse-v2-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
-.endorse-v2-label { display:block; color:#536273; font-size:11px; font-weight:600; margin-bottom:3px; }
-.endorse-v2-value { color:#17212b; font-size:18px; font-weight:700; }
-.endorse-v2-meta { color:#536273; font-size:12px; line-height:1.5; }
-.endorse-v2-alert { margin-top:10px; padding:8px 10px; border-radius:7px; background:#fff3cd; color:#664d03; font-size:12px; }
-.endorse-v2-alert.danger { background:#fbe0e1; color:#842029; }
+.endorse-v2-metric { min-height: 144px; }
+.endorse-v2-label { display:block; color:#536273; font-size:11px; font-weight:600; margin-bottom:2px; }
+.endorse-v2-value { color:#17212b; font-size:18px; font-weight:700; display:block; margin-bottom:9px; }
+.endorse-v2-meta { color:#536273; font-size:12px; line-height:1.45; display:block; margin-bottom:9px; }
+.endorse-v2-status { font-size:12px; font-weight:600; }
 .tippy-box[data-theme~='light'] {
     background-color: #ffffff !important;
     color: #333333 !important;
@@ -884,30 +896,36 @@ if ($view == 'table') {
 <?php if ($analytics_v2_cards_enabled && $view === 'card'): ?>
 <script>
 (function () {
+    var isu = {};
     function angka(v, plus) { return (plus && Number(v) > 0 ? '+' : '') + Number(v || 0).toLocaleString('id-ID'); }
     function aman(v) { return $('<div>').text(v || '').html(); }
-    function amanAtribut(v) { return String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
-    function detailGagal(f) {
-        if (!f) return '';
-        return '<div class="endorse-v2-alert danger"><strong>Alasan kegagalan</strong><br>' + aman(f.alasan) +
-            '<br>Terakhir mencoba: ' + aman(f.terakhir_mencoba_label || 'Tidak tersedia') +
-            '<br>Jumlah percobaan: ' + angka(f.jumlah_percobaan) + ' kali' +
-            (f.pesan_teknis ? '<br><button type="button" class="btn btn-link btn-sm p-0 endorse-v2-detail">Lihat pesan teknis</button><span class="d-none endorse-v2-technical"><br>Pesan teknis: ' + aman(f.pesan_teknis) + '</span>' : '') + '</div>';
-    }
     function renderCard($box, d) {
         var gagal = d.status_sinkronisasi === 'gagal' || d.status_sinkronisasi === 'belum_pernah_berhasil';
         var totalLabel = gagal ? 'Total Views Terakhir Diketahui' : 'Total Views Terakhir Disinkronkan';
-        var duplicateUrl = '<?= base_url() ?>endorse/list?id_campaign=' + encodeURIComponent(d.id_campaign || '') + '&pic=' + encodeURIComponent(d.pic || '') + '&content_id=' + encodeURIComponent(d.content_id || '');
-        var html = '<div class="endorse-v2-grid"><div><span class="endorse-v2-label">' + totalLabel + '</span><span class="endorse-v2-value">' + angka(d.total_views_terakhir_disinkronkan) + '</span></div>' +
-            '<div><span class="endorse-v2-label">Kenaikan dari Hari Sebelumnya</span><span class="endorse-v2-value">' + angka(d.kenaikan_views, true) + '</span></div>' +
-            '<div><span class="endorse-v2-label">Terakhir Disinkronkan</span><span class="endorse-v2-meta">' + aman(d.sinkronisasi_terakhir_label || 'Belum pernah berhasil disinkronkan') + '</span></div>' +
-            '<div><span class="endorse-v2-label">Status Sinkronisasi</span><span class="endorse-v2-meta">' + aman(d.status_label) + '</span></div></div>';
-        if (d.menggunakan_data_terakhir) html += '<div class="endorse-v2-alert">Nilai menggunakan hasil sinkronisasi terakhir yang berhasil.</div>';
-        if (gagal) html += detailGagal(d.failure);
-        if (d.has_duplicate) html += '<div class="endorse-v2-alert">⚠ Duplikat terdeteksi. Content ID ini tercatat pada ' + angka(d.duplicate_row_count) + ' data postingan. <a href="' + duplicateUrl + '">Lihat Data Duplikat</a></div>';
-        if (d.memiliki_anomali) html += '<div class="endorse-v2-alert danger">⚠ Anomali data. Total views hasil sinkronisasi lebih rendah dari data sebelumnya. <button type="button" class="btn btn-link btn-sm p-0 endorse-v2-detail">Lihat Detail</button><span class="d-none endorse-v2-technical"><br>Selisih asli: ' + angka(d.selisih_negatif) + '</span></div>';
-        if (d.link_postingan) html += '<a class="small" target="_blank" rel="noopener" href="' + amanAtribut(d.link_postingan) + '">Lihat Postingan</a>';
+        var hasIssue = gagal || d.has_duplicate || d.memiliki_anomali;
+        isu[d.id_endorse] = d;
+        var html = '<span class="endorse-v2-label">' + totalLabel + '</span><span class="endorse-v2-value">' + angka(d.total_views_terakhir_disinkronkan) + '</span>' +
+            '<span class="endorse-v2-label">Kenaikan Hari Ini</span><span class="endorse-v2-value">' + angka(d.kenaikan_views, true) + '</span>' +
+            '<span class="endorse-v2-label">Terakhir Disinkronkan</span><span class="endorse-v2-meta">' + aman(d.sinkronisasi_terakhir_label || 'Belum pernah berhasil disinkronkan') + '</span>' +
+            '<span class="endorse-v2-label">Status Sinkronisasi</span><span class="endorse-v2-status">' + aman(d.status_label) + '</span>';
+        if (d.menggunakan_data_terakhir) html += '<span class="endorse-v2-meta">Nilai menggunakan hasil sinkronisasi terakhir yang berhasil.</span>';
+        if (hasIssue) html += '<button type="button" class="btn btn-outline-danger btn-sm mt-2 endorse-v2-check-issue" data-endorse-id="' + d.id_endorse + '"><i class="bi bi-exclamation-triangle"></i> Check Issue</button>';
         $box.html(html);
+    }
+    function tampilkanIsu(id) {
+        var d = isu[id]; if (!d) return;
+        var sections = [];
+        if (d.status_sinkronisasi === 'gagal' || d.status_sinkronisasi === 'belum_pernah_berhasil') {
+            var f = d.failure || {};
+            sections.push('<h6>Masalah Sinkronisasi</h6><p><strong>Alasan kegagalan</strong><br>' + aman(f.alasan || 'Sistem tidak berhasil memperoleh data baru') + '</p><p><strong>Terakhir mencoba</strong><br>' + aman(f.terakhir_mencoba_label || 'Tidak tersedia') + '</p><p><strong>Jumlah percobaan</strong><br>' + angka(f.jumlah_percobaan) + ' kali</p>' + (f.pesan_teknis ? '<p><strong>Pesan teknis</strong><br>' + aman(f.pesan_teknis) + '</p>' : ''));
+        }
+        if (d.has_duplicate) {
+            var url = '<?= base_url() ?>endorse/list?id_campaign=' + encodeURIComponent(d.id_campaign || '') + '&pic=' + encodeURIComponent(d.pic || '') + '&content_id=' + encodeURIComponent(d.content_id || '');
+            sections.push('<h6>Duplikat Terdeteksi</h6><p>Content ID <code>' + aman(d.content_id) + '</code> tercatat pada ' + angka(d.duplicate_row_count) + ' data postingan.</p><a href="' + url + '">Lihat Data Duplikat</a>');
+        }
+        if (d.memiliki_anomali) sections.push('<h6>Anomali Data</h6><p>Total views hasil sinkronisasi lebih rendah dari data sebelumnya.</p><p><strong>Selisih asli</strong><br>' + angka(d.selisih_negatif) + '</p>');
+        $('#endorse-v2-issue-content').html(sections.join('<hr>'));
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('endorse-v2-issue-modal')).show();
     }
     function muatMetricV2() {
         var ids = $('[data-endorse-metric]').map(function(){ return $(this).data('endorse-metric'); }).get();
@@ -922,7 +940,7 @@ if ($view == 'table') {
             if (xhr.status !== 410) $('[data-endorse-metric]').html('<span class="text-danger small">Gagal memuat data sinkronisasi.</span>');
         });
     }
-    $(document).on('click', '.endorse-v2-detail', function(){ $(this).siblings('.endorse-v2-technical').toggleClass('d-none'); });
+    $(document).on('click', '.endorse-v2-check-issue', function(){ tampilkanIsu($(this).data('endorse-id')); });
     $(muatMetricV2);
 })();
 </script>
