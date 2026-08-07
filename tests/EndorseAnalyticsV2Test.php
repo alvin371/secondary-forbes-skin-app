@@ -261,6 +261,152 @@ final class EndorseAnalyticsV2Test extends TestCase
         self::assertSame(900, $s['total_views_at_end_date'], 'a blank trailing day must not zero the card');
     }
 
+    // ------------------------------------------------ per-day card context
+
+    /** Five observed days matching the measured Campaign 27 / Fazra window. */
+    private function fazraWindow(): array
+    {
+        $mk = function (string $date, ?int $growth, int $total, int $opening, int $posts) {
+            return [
+                'date' => $date,
+                'observed_daily_growth' => $growth,
+                'total_observed_views' => $total,
+                'opening_views' => $opening,
+                'included_post_count' => $posts,
+                'unresolved_post_count' => 0,
+                'duplicate_group_count' => 0,
+                'negative_anomaly_count' => 0,
+                'carried_forward_count' => 0,
+                'growth_since_last_observation' => 0,
+                'repair_parity_views' => 0,
+                'data_completeness' => Endorse_analytics_v2::PARTIAL,
+                'canonical' => [
+                    'observed_daily_growth' => $growth,
+                    'total_observed_views' => $total,
+                    'opening_views' => $opening,
+                    'included_post_count' => $posts,
+                ],
+            ];
+        };
+        return [
+            $mk('2026-08-01', 67, 94653, 0, 34),
+            $mk('2026-08-02', 100, 163150, 68397, 43),
+            $mk('2026-08-03', 26623, 300590, 110817, 58),
+            $mk('2026-08-04', 35760, 426210, 89860, 69),
+            $mk('2026-08-05', 117889, 615527, 71428, 81),
+        ];
+    }
+
+    public function test_average_daily_growth_divides_by_observed_days(): void
+    {
+        $s = Endorse_analytics_v2::summarize($this->fazraWindow());
+
+        self::assertSame(5, $s['observed_day_count']);
+        self::assertSame(180439, $s['growth_in_selected_period']);
+        self::assertSame(36088, $s['average_daily_growth'], '180,439 / 5 observed days');
+    }
+
+    /**
+     * An unpolled day is unknown, not zero. It must not dilute the average, or
+     * the card would understate growth purely because a poll was missed.
+     */
+    public function test_unobserved_days_do_not_dilute_the_daily_average(): void
+    {
+        $dates = $this->fazraWindow();
+        $blank = $dates[0];
+        $blank['date'] = '2026-08-06';
+        $blank['observed_daily_growth'] = null;
+        $blank['included_post_count'] = 0;
+        $blank['canonical']['included_post_count'] = 0;
+        $dates[] = $blank;
+
+        $s = Endorse_analytics_v2::summarize($dates);
+
+        self::assertSame(5, $s['observed_day_count'], 'the blank day is not an observed day');
+        self::assertSame(36088, $s['average_daily_growth'], 'average is unchanged');
+    }
+
+    public function test_peak_daily_growth_identifies_the_best_day(): void
+    {
+        $s = Endorse_analytics_v2::summarize($this->fazraWindow());
+
+        self::assertSame(117889, $s['peak_daily_growth']);
+        self::assertSame('2026-08-05', $s['peak_daily_growth_date']);
+    }
+
+    public function test_latest_observed_day_is_reported_for_the_cards(): void
+    {
+        $s = Endorse_analytics_v2::summarize($this->fazraWindow());
+
+        self::assertSame('2026-08-05', $s['latest_observed_date']);
+        self::assertSame('2026-08-04', $s['previous_observed_date']);
+        self::assertSame(117889, $s['latest_daily_growth']);
+        self::assertSame(71428, $s['latest_opening_views']);
+    }
+
+    /**
+     * The day-over-day change in the cumulative total is growth PLUS the opening
+     * views of content that entered the population. The card must not present it
+     * as daily growth.
+     */
+    public function test_total_views_change_equals_growth_plus_opening(): void
+    {
+        $s = Endorse_analytics_v2::summarize($this->fazraWindow());
+
+        self::assertSame(189317, $s['total_views_change_vs_previous_day'], '615,527 - 426,210');
+        self::assertSame(
+            $s['total_views_change_vs_previous_day'],
+            $s['latest_daily_growth'] + $s['latest_opening_views'],
+            '117,889 growth + 71,428 opening'
+        );
+    }
+
+    public function test_a_single_observed_day_has_no_day_over_day_change(): void
+    {
+        $s = Endorse_analytics_v2::summarize([$this->fazraWindow()[0]]);
+
+        self::assertSame(1, $s['observed_day_count']);
+        self::assertNull($s['total_views_change_vs_previous_day'], 'nothing to compare against');
+        self::assertNull($s['previous_observed_date']);
+    }
+
+    public function test_empty_period_reports_no_per_day_context(): void
+    {
+        $s = Endorse_analytics_v2::summarize([]);
+
+        self::assertSame(0, $s['observed_day_count']);
+        self::assertSame(0, $s['average_daily_growth'], 'no division by zero');
+        self::assertNull($s['latest_observed_date']);
+        self::assertNull($s['peak_daily_growth_date']);
+    }
+
+    public function test_completeness_day_counts_break_the_period_down(): void
+    {
+        $dates = $this->fazraWindow();
+        $dates[0]['data_completeness'] = Endorse_analytics_v2::INSUFFICIENT;
+        $dates[4]['data_completeness'] = Endorse_analytics_v2::COMPLETE;
+
+        $s = Endorse_analytics_v2::summarize($dates);
+
+        self::assertSame(1, $s['completeness_day_counts'][Endorse_analytics_v2::COMPLETE]);
+        self::assertSame(3, $s['completeness_day_counts'][Endorse_analytics_v2::PARTIAL]);
+        self::assertSame(1, $s['completeness_day_counts'][Endorse_analytics_v2::INSUFFICIENT]);
+    }
+
+    public function test_per_day_context_follows_the_canonical_population(): void
+    {
+        $dates = $this->fazraWindow();
+        $dates[4]['canonical']['observed_daily_growth'] = 100000;
+        $dates[4]['canonical']['total_observed_views'] = 609895;
+
+        $raw = Endorse_analytics_v2::summarize($dates);
+        $canon = Endorse_analytics_v2::summarize($dates, Endorse_analytics_v2::POPULATION_CANONICAL);
+
+        self::assertSame(117889, $raw['peak_daily_growth']);
+        self::assertSame(100000, $canon['peak_daily_growth']);
+        self::assertSame(609895, $canon['total_views_at_end_date']);
+    }
+
     public function test_summary_reports_completeness_at_its_weakest_link(): void
     {
         self::assertSame('insufficient', Endorse_analytics_v2::worse_completeness('complete', 'insufficient'));

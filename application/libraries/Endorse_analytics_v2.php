@@ -341,10 +341,28 @@ class Endorse_analytics_v2
             'carried_forward_count' => 0,
             'repair_parity_views' => 0,
             'data_completeness' => self::INSUFFICIENT,
+
+            // Per-day context for the dashboard cards. Derived here rather than
+            // in the view so the cards can never drift from the summary.
+            'observed_day_count' => 0,
+            'average_daily_growth' => 0,
+            'peak_daily_growth' => 0,
+            'peak_daily_growth_date' => null,
+            'latest_observed_date' => null,
+            'previous_observed_date' => null,
+            'latest_daily_growth' => 0,
+            'latest_opening_views' => 0,
+            'total_views_change_vs_previous_day' => null,
+            'completeness_day_counts' => [
+                self::COMPLETE => 0,
+                self::PARTIAL => 0,
+                self::INSUFFICIENT => 0,
+            ],
         ];
 
         $lastObserved = null;
         $worst = self::COMPLETE;
+        $previousTotal = null;
 
         foreach ($dates as $d) {
             $scope = $useCanonical ? $d['canonical'] : $d;
@@ -356,13 +374,31 @@ class Endorse_analytics_v2
             $summary['carried_forward_count'] += intval($d['carried_forward_count'] ?? 0);
             $summary['repair_parity_views'] += intval($d['repair_parity_views'] ?? 0);
 
+            $summary['completeness_day_counts'][strval($d['data_completeness'] ?? self::INSUFFICIENT)]++;
+
             if (intval($d['included_post_count'] ?? 0) > 0) {
+                // Carry the previous observed day's total before overwriting, so
+                // the Total Views card can show a day-over-day change.
+                $previousTotal = $summary['total_views_at_end_date'];
+                $summary['previous_observed_date'] = $summary['latest_observed_date'];
+
                 $lastObserved = $d;
                 // The scope's own post/unresolved counts describe the most
                 // recent observed day, matching what the Total Views card says.
                 $summary['included_post_count'] = intval($scope['included_post_count'] ?? 0);
                 $summary['unresolved_post_count'] = intval($d['unresolved_post_count'] ?? 0);
                 $summary['total_views_at_end_date'] = intval($scope['total_observed_views'] ?? 0);
+
+                $summary['observed_day_count']++;
+                $summary['latest_observed_date'] = strval($d['date'] ?? '');
+                $summary['latest_daily_growth'] = intval($scope['observed_daily_growth'] ?? 0);
+                $summary['latest_opening_views'] = intval($scope['opening_views'] ?? 0);
+
+                $growth = intval($scope['observed_daily_growth'] ?? 0);
+                if ($summary['peak_daily_growth_date'] === null || $growth > $summary['peak_daily_growth']) {
+                    $summary['peak_daily_growth'] = $growth;
+                    $summary['peak_daily_growth_date'] = strval($d['date'] ?? '');
+                }
             }
 
             $summary['duplicate_group_count'] = max(
@@ -373,6 +409,22 @@ class Endorse_analytics_v2
         }
 
         $summary['data_completeness'] = $lastObserved === null ? self::INSUFFICIENT : $worst;
+
+        // Averaged over OBSERVED days only. Dividing by calendar days would let
+        // a day we never polled drag the average down as if growth were zero.
+        if ($summary['observed_day_count'] > 0) {
+            $summary['average_daily_growth'] = intval(round(
+                $summary['growth_in_selected_period'] / $summary['observed_day_count']
+            ));
+        }
+
+        // Change in the cumulative total between the last two observed days.
+        // This is NOT daily growth: it also contains the opening views of any
+        // content that entered the population, i.e. growth + opening.
+        if ($previousTotal !== null && $summary['previous_observed_date'] !== null) {
+            $summary['total_views_change_vs_previous_day'] =
+                $summary['total_views_at_end_date'] - $previousTotal;
+        }
 
         return $summary;
     }
