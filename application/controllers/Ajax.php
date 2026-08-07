@@ -966,6 +966,16 @@ class Ajax extends CI_Controller
 		}
 
 		$get = $this->input->get(null) ?: array();
+		$campaignId = intval($this->input->get('id_campaign'));
+		$allowlist = array_values(array_filter(array_map(
+			'intval',
+			explode(',', strval(env('ENDORSE_ANALYTICS_V2_CAMPAIGNS', '')))
+		)));
+		if (!empty($allowlist) && !in_array($campaignId, $allowlist, true)) {
+			return $this->output->set_status_header(410)->set_content_type('application/json', 'utf-8')
+				->set_output(json_encode(array('enabled' => false)));
+		}
+
 		require_once APPPATH . 'libraries/Endorse_analytics_read_model.php';
 		$ids = Endorse_analytics_v2::int_list($get['ids'] ?? '');
 		if (empty($ids)) {
