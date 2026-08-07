@@ -361,11 +361,55 @@ class Endorse_sync
 
         $this->upsert_daily_log_row($logRow, $user_id);
 
+        // Additive append-only observation record. Disabled by default; failure
+        // here must never affect the sync result, which is the authoritative
+        // path. Nothing reads this table yet.
+        $this->record_stats_snapshot($id_endorse, $stats, $response, $platform);
+
         return [
             'status'      => true,
             'error_class' => self::ERR_OK,
             'msg'         => 'OK',
         ];
+    }
+
+    /**
+     * Append one immutable snapshot of a trustworthy provider success.
+     *
+     * Guarded by ENDORSE_SNAPSHOTS_WRITE so it can be enabled independently of
+     * the analytics rollout. Never updates or deletes; never throws upward.
+     */
+    protected function record_stats_snapshot(int $id_endorse, array $stats, array $response, string $platform): void
+    {
+        $this->CI->load->helper('env');
+        if (env('ENDORSE_SNAPSHOTS_WRITE', '0') !== '1') {
+            return;
+        }
+
+        try {
+            $db = $this->CI->db;
+            if (!$db->table_exists('endorse_stats_snapshots')) {
+                return;
+            }
+
+            $now = date('Y-m-d H:i:s');
+            $db->insert('endorse_stats_snapshots', [
+                'id_endorse'   => $id_endorse,
+                'content_id'   => strval($response['data']['content_id'] ?? ''),
+                'observed_at'  => $now,
+                'views'        => intval($stats['views'] ?? 0),
+                'likes'        => intval($stats['likes'] ?? 0),
+                'comment'      => intval($stats['comment'] ?? 0),
+                'share_save'   => intval($stats['share_save'] ?? 0),
+                'provider'     => $platform,
+                'queue_id'     => isset($response['queue_id']) ? intval($response['queue_id']) : null,
+                'attempt_id'   => isset($response['attempt_id']) ? intval($response['attempt_id']) : null,
+                'result_class' => self::ERR_OK,
+                'created_at'   => $now,
+            ]);
+        } catch (Throwable $e) {
+            log_message('error', 'endorse_stats_snapshots insert failed: ' . $e->getMessage());
+        }
     }
 
     public function apply_snapshot(array $endorse, array $response, string $purpose, int $user_id): array
