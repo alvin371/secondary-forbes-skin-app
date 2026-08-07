@@ -20,6 +20,22 @@ class Endorse_sync
     const ERR_INFRA_TLS = 'infra_tls';
     const ERR_INFRA_STALL = 'infra_stall';
     const ERR_CONFIG    = 'config';
+    const ERR_DATA_QUALITY = 'data_quality';
+
+    /**
+     * Normalized provider messages meaning "this content cannot be resolved".
+     * Matched against a punctuation-stripped, lowercased message so wording
+     * tweaks on the provider side do not silently reopen the retry loop.
+     */
+    const PROVIDER_UNRESOLVABLE_PATTERNS = [
+        'url parsing is failed',
+        'url parsing failed',
+        'cannot parse url',
+        'invalid url',
+        'content not found',
+        'video not found',
+        'item not found',
+    ];
 
     /** @var CI_Controller */
     protected $CI;
@@ -27,7 +43,60 @@ class Endorse_sync
     public static function is_terminal_class(string $errorClass): bool
     {
         return $errorClass === self::ERR_PERMANENT
-            || $errorClass === self::ERR_EMPTY;
+            || $errorClass === self::ERR_EMPTY
+            || $errorClass === self::ERR_DATA_QUALITY;
+    }
+
+    /**
+     * Normalize a provider message for matching: lowercase, then collapse every
+     * run of non-alphanumeric characters to a single space. Keeps matching
+     * stable across casing and punctuation ("Url parsing is failed! Please check url.").
+     */
+    public static function normalize_provider_message($message): string
+    {
+        $text = strtolower(trim((string) $message));
+        return trim((string) preg_replace('/[^a-z0-9]+/', ' ', $text));
+    }
+
+    /**
+     * True when the transport succeeded but the provider reported, at the
+     * application level, that it cannot resolve the requested content.
+     *
+     * Deliberately narrow. It requires a 2xx transport, no cURL error, and a
+     * non-success provider code, so rate limits (429), upstream outages (5xx)
+     * and connection failures keep falling through to the transient path.
+     */
+    public static function is_provider_unresolvable(array $response): bool
+    {
+        $meta = is_array($response['error_meta'] ?? null) ? $response['error_meta'] : [];
+
+        if (intval($meta['curl_errno'] ?? 0) !== 0) {
+            return false;
+        }
+
+        $httpCode = intval($meta['http_code'] ?? 0);
+        if ($httpCode < 200 || $httpCode > 299) {
+            return false;
+        }
+
+        $providerCode = trim(strval($meta['rapidapi_code'] ?? ''));
+        if ($providerCode === '' || $providerCode === 'n/a' || $providerCode === '0') {
+            return false;
+        }
+
+        foreach ([$meta['rapidapi_msg'] ?? '', $response['upstream_msg'] ?? '', $response['msg'] ?? ''] as $raw) {
+            $text = self::normalize_provider_message($raw);
+            if ($text === '') {
+                continue;
+            }
+            foreach (self::PROVIDER_UNRESOLVABLE_PATTERNS as $pattern) {
+                if (strpos($text, $pattern) !== false) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     public function __construct()
@@ -75,6 +144,17 @@ class Endorse_sync
 
         $msg = strval($response['msg'] ?? '');
         $machineClass = strval($response['error_class'] ?? '');
+
+        // Checked before the machine-class passthrough below: the transport layer
+        // defaults every RapidAPI failure to 'transient', so an application-level
+        // "cannot resolve this content" answer would otherwise be retried on every
+        // attempt of every cycle — paid calls that can never succeed.
+        if (self::is_provider_unresolvable($response)) {
+            return [
+                'class' => self::ERR_DATA_QUALITY,
+                'msg' => $msg ?: 'Konten tidak dapat diresolusi oleh provider',
+            ];
+        }
 
         if (in_array($machineClass, [
             self::ERR_INFRA,
