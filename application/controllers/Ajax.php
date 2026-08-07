@@ -872,6 +872,93 @@ class Ajax extends CI_Controller
 		echo json_encode($html, true);
 	}
 
+	/**
+	 * V2 endorse analytics — daily observed growth + total observed views.
+	 *
+	 * Additive and fully separate from get_chart_campaign(), which is left
+	 * untouched so existing consumers cannot break. Returns pure JSON with real
+	 * numeric types; no field of the legacy response is reused or redefined.
+	 *
+	 * Daily growth is derived from the cumulative `views_after` snapshots, not
+	 * from the historically corrupted `views` column. No row is ever written.
+	 *
+	 * Gated by ENDORSE_ANALYTICS_V2 (off | shadow | on), following the existing
+	 * ENDORSE_ROLLUP_READ flag convention.
+	 */
+	public function get_chart_campaign_v2()
+	{
+		$this->load->helper('env');
+
+		$mode = strtolower(trim(strval(env('ENDORSE_ANALYTICS_V2', 'off'))));
+		if (!in_array($mode, array('off', 'shadow', 'on'), true)) {
+			$mode = 'off';
+		}
+
+		$get = $this->input->get(null) ?: array();
+		$campaignId = intval($this->input->get('id_campaign'));
+
+		// Staged rollout: an empty allowlist means every campaign.
+		$allowlist = array_values(array_filter(array_map(
+			'intval',
+			explode(',', strval(env('ENDORSE_ANALYTICS_V2_CAMPAIGNS', '')))
+		)));
+		if ($mode !== 'off' && !empty($allowlist) && !in_array($campaignId, $allowlist, true)) {
+			$mode = 'off';
+		}
+
+		if ($mode === 'off') {
+			return $this->output
+				->set_status_header(410)
+				->set_content_type('application/json', 'utf-8')
+				->set_output(json_encode(array(
+					'enabled' => false,
+					'mode' => 'off',
+					'message' => 'Endorse analytics V2 is disabled; use the legacy chart endpoint.',
+				)));
+		}
+
+		require_once APPPATH . 'libraries/Endorse_analytics_read_model.php';
+
+		$population = strtolower(trim(strval(env('ENDORSE_ANALYTICS_V2_POPULATION', 'raw'))));
+		if ($population !== Endorse_analytics_v2::POPULATION_CANONICAL) {
+			$population = Endorse_analytics_v2::POPULATION_RAW;
+		}
+
+		$model = new Endorse_analytics_read_model();
+
+		$started = microtime(true);
+		$payload = $model->build($get, $population);
+		$payload['meta']['mode'] = $mode === 'on' ? 'visible' : 'shadow';
+		$payload['meta']['elapsed_ms'] = round((microtime(true) - $started) * 1000, 1);
+
+		// Shadow mode reports the legacy aggregate alongside V2 so the two can
+		// be diffed without either path changing what it renders.
+		if ($mode === 'shadow') {
+			$legacy = $model->legacy_daily_views($get);
+			$comparison = array();
+			foreach ($payload['dates'] as $d) {
+				$date = $d['date'];
+				$legacyValue = isset($legacy[$date]) ? intval($legacy[$date]) : 0;
+				$comparison[] = array(
+					'date' => $date,
+					'legacy_views' => $legacyValue,
+					'v2_observed_daily_growth' => $d['observed_daily_growth'],
+					'v2_total_observed_views' => $d['total_observed_views'],
+					'v2_opening_views' => $d['opening_views'],
+					'repair_parity_views' => $d['repair_parity_views'],
+					'difference' => $d['observed_daily_growth'] === null
+						? null
+						: intval($d['observed_daily_growth']) - $legacyValue,
+				);
+			}
+			$payload['meta']['legacy_comparison'] = $comparison;
+		}
+
+		return $this->output
+			->set_content_type('application/json', 'utf-8')
+			->set_output(json_encode($payload));
+	}
+
 
 	private function calculateChartMax($max_value) {
 		if ($max_value <= 0) {
