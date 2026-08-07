@@ -38,7 +38,7 @@ class Endorse_analytics_v2_compare extends CI_Controller
     public function run()
     {
         $get = $this->request_from_opts();
-        $population = strval($this->opts['population'] ?? Endorse_analytics_v2::POPULATION_RAW);
+        $population = Endorse_analytics_v2::POPULATION_CANONICAL;
 
         $model = new Endorse_analytics_read_model();
 
@@ -60,20 +60,20 @@ class Endorse_analytics_v2_compare extends CI_Controller
             'DATE', 'LEGACY', 'V2 GROWTH', 'V2 TOTAL', 'OPENING', 'DIFF', 'POSTS', 'UNRES', 'COMPLETE'
         ));
 
-        foreach ($payload['dates'] as $d) {
-            $legacyValue = intval($legacy[$d['date']] ?? 0);
-            $growth = $d['observed_daily_growth'];
+        foreach ($payload['harian'] as $d) {
+            $legacyValue = intval($legacy[$d['tanggal']] ?? 0);
+            $growth = intval($d['kenaikan_views']);
             $this->out(sprintf(
                 '%-12s %12s %14s %14s %14s %12s %8d %8d %-12s',
-                $d['date'],
+                $d['tanggal'],
                 number_format($legacyValue),
-                $growth === null ? 'no data' : number_format(intval($growth)),
-                number_format(intval($d['total_observed_views'])),
+                number_format($growth),
+                number_format(intval($d['total_views_terakhir_disinkronkan'])),
                 number_format(intval($d['opening_views'])),
-                $growth === null ? '-' : number_format(intval($growth) - $legacyValue),
-                intval($d['included_post_count']),
-                intval($d['unresolved_post_count']),
-                strval($d['data_completeness'])
+                number_format($growth - $legacyValue),
+                intval($d['jumlah_post']),
+                intval($d['jumlah_belum_pernah_berhasil']),
+                strval($d['kelengkapan_data'])
             ));
         }
 
@@ -81,10 +81,10 @@ class Endorse_analytics_v2_compare extends CI_Controller
         $this->out('');
         $this->out('SUMMARY');
         foreach ([
-            'total_views_at_end_date', 'growth_in_selected_period', 'opening_views_in_selected_period',
-            'growth_since_last_observation', 'included_post_count', 'unresolved_post_count',
-            'duplicate_group_count', 'negative_anomaly_count', 'carried_forward_count',
-            'repair_parity_views', 'data_completeness',
+            'total_views_terakhir_disinkronkan', 'total_kenaikan_views', 'total_opening_views',
+            'jumlah_post', 'jumlah_berhasil', 'jumlah_gagal', 'jumlah_belum_pernah_berhasil',
+            'jumlah_grup_duplikat', 'jumlah_anomali', 'jumlah_menggunakan_data_terakhir',
+            'kelengkapan_data',
         ] as $k) {
             $v = $s[$k] ?? '';
             $this->out(sprintf('  %-34s %s', $k, is_int($v) ? number_format($v) : strval($v)));
@@ -92,9 +92,8 @@ class Endorse_analytics_v2_compare extends CI_Controller
 
         $this->out('');
         $this->out(sprintf('  v2_build_ms %.1f   legacy_query_ms %.1f   observation_rows %d',
-            $buildMs, $legacyMs, intval($payload['meta']['observation_row_count'])));
-        $this->out('  NOTE: repair_parity_views reproduces the historical repair preview total.');
-        $this->out('        observed_daily_growth is the product metric and excludes opening views.');
+            $buildMs, $legacyMs, intval($payload['meta']['jumlah_baris_observasi'])));
+        $this->out('  NOTE: Kenaikan V2 dihitung per konten canonical dan tidak memasukkan opening views.');
     }
 
     /**
