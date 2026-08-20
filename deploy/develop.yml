@@ -16,6 +16,19 @@
         --image {{ container_image }} \
         --with-registry-auth
 
+  - name: retain bounded Docker PERF logs for incident evidence
+    ansible.builtin.command:
+      argv:
+        - docker
+        - service
+        - update
+        - --log-driver
+        - json-file
+        - --log-opt
+        - max-size=25m
+        - --log-opt
+        - max-file=14
+        - "{{ stack_name }}_app"
  # - name: waiting nextjs-app ready
  #   ansible.builtin.uri:
  #     url: 
