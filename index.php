@@ -54,8 +54,59 @@ date_default_timezone_set('Asia/Jakarta');
  *
  * NOTE: If you change these, also change the error_reporting() code below
  */
-// define('ENVIRONMENT', isset($_SERVER['CI_ENV']) ? $_SERVER['CI_ENV'] : 'development');
-define('ENVIRONMENT', 'development');
+if (!function_exists('bootstrap_env_value')) {
+	function bootstrap_env_value($key, $default = null)
+	{
+		if (isset($_SERVER[$key]) && $_SERVER[$key] !== '') {
+			return $_SERVER[$key];
+		}
+
+		$envFile = __DIR__ . DIRECTORY_SEPARATOR . '.env';
+		if (!is_readable($envFile)) {
+			return $default;
+		}
+
+		foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+			$line = trim($line);
+			if ($line === '' || strpos($line, '#') === 0 || strpos($line, '=') === false) {
+				continue;
+			}
+
+			list($name, $value) = explode('=', $line, 2);
+			if (trim($name) !== $key) {
+				continue;
+			}
+
+			return trim(trim($value), "\"'");
+		}
+
+		return $default;
+	}
+}
+
+if (!function_exists('bootstrap_env_bool')) {
+	function bootstrap_env_bool($key, $default = false)
+	{
+		$value = bootstrap_env_value($key, null);
+		if ($value === null) {
+			return $default;
+		}
+
+		$normalized = strtolower(trim((string) $value));
+
+		if (in_array($normalized, array('1', 'true', 'yes', 'on'), true)) {
+			return true;
+		}
+
+		if (in_array($normalized, array('0', 'false', 'no', 'off'), true)) {
+			return false;
+		}
+
+		return $default;
+	}
+}
+
+define('ENVIRONMENT', bootstrap_env_value('CI_ENV', 'development'));
 
 
 /*
