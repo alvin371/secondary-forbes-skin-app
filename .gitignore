@@ -4,3 +4,7 @@
 # Environment files - keep credentials secure
 /.env
 /application/credentials/client_secret.json
+
+# Python bytecode from tests/tools
+__pycache__/
+*.pyc
