@@ -90,6 +90,7 @@ final class ThreadsScraperOutcomeTest extends TestCase
         self::assertSame('job-a', Threads_scraper_outcome::submitJobId(['job_id' => 'job-a']));
         self::assertSame('job-b', Threads_scraper_outcome::submitJobId(['data' => ['job_id' => 'job-b']]));
         self::assertNull(Threads_scraper_outcome::submitJobId(['status' => 'accepted']));
+        self::assertNull(Threads_scraper_outcome::submitJobId(['job_id' => str_repeat('x', 65)]));
     }
 
     public function test_user_messages_are_actionable_and_secret_free(): void

@@ -65,11 +65,11 @@ safe_name() { printf '%s' "$1" | sed 's/[^A-Za-z0-9_.-]/_/g'; }
 stats_out="$tmpdir/stats.out"; stats_err="$tmpdir/stats.err"; stats=""
 run_to_file docker_stats "$MONITOR_STATS_COMMAND" "$stats_out" "$stats_err" || true
 [ -r "$stats_out" ] && stats=$(cat "$stats_out")
-load=$(awk '{print $1" "$2" "$3}' /proc/loadavg 2>/dev/null || true)
+host_load=$(awk '{print $1" "$2" "$3}' /proc/loadavg 2>/dev/null || true)
 memory=$(free -b 2>/dev/null | awk '/^Mem:/ {print "used=" $3 ",total=" $2}' || true)
-snapshot=$(printf '%s\n' "$stats" | awk -F'|' -v ts="$ts" -v load="$load" -v mem="$memory" -v fail="$failures" -v version="$MONITOR_VERSION" '
+snapshot=$(printf '%s\n' "$stats" | awk -F'|' -v ts="$ts" -v host_load="$host_load" -v mem="$memory" -v fail="$failures" -v version="$MONITOR_VERSION" '
 function e(x){gsub(/\\/,"\\\\",x);gsub(/"/,"\\\"",x);return x}
-BEGIN{printf "{\"schema_version\":\"1\",\"type\":\"resource_snapshot\",\"ts\":\"%s\",\"host_load\":\"%s\",\"host_memory\":\"%s\",\"collector_version\":\"%s\",\"failed_sections\":\"%s\",\"containers\":[",e(ts),e(load),e(mem),e(version),e(fail);first=1}
+BEGIN{printf "{\"schema_version\":\"1\",\"type\":\"resource_snapshot\",\"ts\":\"%s\",\"host_load\":\"%s\",\"host_memory\":\"%s\",\"collector_version\":\"%s\",\"failed_sections\":\"%s\",\"containers\":[",e(ts),e(host_load),e(mem),e(version),e(fail);first=1}
 NF==4 || NF==6{c=$2;m=$3;sub(/%$/,"",c);sub(/%$/,"",m);if(c~/^[0-9]+([.][0-9]+)?$/&&m~/^[0-9]+([.][0-9]+)?$/&&$4~/^[0-9]+$/){if(!first)printf ",";printf "{\"name\":\"%s\",\"cpu_percent\":%s,\"memory_percent\":%s,\"pids\":%s",e($1),c,m,$4;if(NF==6)printf ",\"net_io\":\"%s\",\"block_io\":\"%s\"",e($5),e($6);printf "}";first=0}}
 END{print "]}"}')
 line "$snapshot"
@@ -86,7 +86,7 @@ evidence() {
     processes='[]'
     if command -v ps >/dev/null 2>&1; then processes=$(ps -eo pid,ppid,comm,%cpu,%mem,etime --sort=-%cpu 2>/dev/null | head -n 41 | json_escape); fi
     payload=$(printf '{"schema_version":"1","captured_at":"%s","collector_version":"%s","incident_id":"%s","service_name":"%s","phase":"%s","host":{"load":"%s","memory":"%s"},"processes":%s,"mysql_diagnostics":%s,"failed_sections":"%s"}' \
-        "$(escape "$ts")" "$MONITOR_VERSION" "$(escape "$incident_id")" "$(escape "$service")" "$phase" "$(escape "$load")" "$(escape "$memory")" "$processes" "$diag" "$(escape "$failures")")
+        "$(escape "$ts")" "$MONITOR_VERSION" "$(escape "$incident_id")" "$(escape "$service")" "$phase" "$(escape "$host_load")" "$(escape "$memory")" "$processes" "$diag" "$(escape "$failures")")
     payload_bytes=$(printf '%s' "$payload" | wc -c | tr -d ' ')
     if [ "$payload_bytes" -gt "$MONITOR_MAX_EVIDENCE_BYTES" ]; then
         payload=$(printf '{"schema_version":"1","captured_at":"%s","collector_version":"%s","incident_id":"%s","service_name":"%s","phase":"%s","truncated":true,"failed_sections":"%s"}' \
