@@ -2010,11 +2010,21 @@ class Endorse extends BaseController
         $start        = max(0, intval($this->input->get_post('start')));
         $length       = intval($this->input->get_post('length'));
         $length       = ($length > 0 && $length <= 200) ? $length : 25;
+        $queueTable = 'endorse_refresh_queue';
+        $submittedAt = $this->queueFieldOrNull($queueTable, 'submitted_at');
+        $nextPollAt = $this->queueFieldOrNull($queueTable, 'next_poll_at');
+        $nextRetryAt = $this->queueFieldOrNull($queueTable, 'next_retry_at');
+        $errorCode = $this->queueFieldOrNull($queueTable, 'error_code');
+        $userErrorMessage = $this->queueFieldOrNull($queueTable, 'user_error_message');
+        $providerJobId = $this->queueFieldOrNull($queueTable, 'provider_job_id');
+        $errorMessage = $userErrorMessage === 'NULL'
+            ? 'q.error_message'
+            : "COALESCE($userErrorMessage, q.error_message)";
         $activityExpr = "CASE
             WHEN q.status = 'pending' THEN q.created_at
             WHEN q.status = 'processing' THEN COALESCE(q.started_at, q.created_at)
-            WHEN q.status = 'submitted' THEN COALESCE(q.submitted_at, q.created_at)
-            WHEN q.status = 'retrying' THEN COALESCE(q.next_retry_at, q.created_at)
+            WHEN q.status = 'submitted' THEN COALESCE($submittedAt, q.created_at)
+            WHEN q.status = 'retrying' THEN COALESCE($nextRetryAt, q.created_at)
             ELSE COALESCE(q.completed_at, q.created_at)
         END";
 
@@ -2049,8 +2059,8 @@ class Endorse extends BaseController
                 OR q.link_upload LIKE '%$keywordEsc%'
                 OR q.platform LIKE '%$keywordEsc%'
                 OR q.error_message LIKE '%$keywordEsc%'
-                OR q.user_error_message LIKE '%$keywordEsc%'
-                OR q.error_code LIKE '%$keywordEsc%'
+                " . ($userErrorMessage === 'NULL' ? '' : "OR $userErrorMessage LIKE '%$keywordEsc%'") . "
+                " . ($errorCode === 'NULL' ? '' : "OR $errorCode LIKE '%$keywordEsc%'") . "
             )";
         }
         $whereSql = 'WHERE ' . implode(' AND ', $where);
@@ -2060,9 +2070,10 @@ class Endorse extends BaseController
 
         $rows = $this->mymodel->selectWithQuery("
             SELECT q.id, q.id_endorse, q.id_campaign, q.platform, q.link_upload,
-                   q.status, q.priority, q.attempts, q.max_attempts, q.error_code,
-                   COALESCE(q.user_error_message, q.error_message) AS error_message,
-                   q.provider_job_id, q.submitted_at, q.next_poll_at, q.next_retry_at,
+                   q.status, q.priority, q.attempts, q.max_attempts, $errorCode AS error_code,
+                   $errorMessage AS error_message,
+                   $providerJobId AS provider_job_id, $submittedAt AS submitted_at,
+                   $nextPollAt AS next_poll_at, $nextRetryAt AS next_retry_at,
                    q.created_at, q.started_at, q.completed_at, q.retry_source_id,
                    q.created_at AS queued_at,
                    $activityExpr AS activity_at,
@@ -2124,6 +2135,11 @@ class Endorse extends BaseController
             'last_activity_at' => $lastActivityAt,
             'auto_enqueue_schedule' => 'Setiap hari 11:30 WIB',
         ]);
+    }
+
+    private function queueFieldOrNull(string $table, string $field): string
+    {
+        return $this->db->field_exists($field, $table) ? "q.$field" : 'NULL';
     }
 
     public function queue_history()
