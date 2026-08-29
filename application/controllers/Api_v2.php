@@ -345,6 +345,16 @@ class Api_v2 extends CI_Controller
 
         if (!empty($claim['skipped'])) {
             $skip = $claim['skipped'];
+            if (class_exists('Performance_observer')) {
+                Performance_observer::set_workload([
+                    'job_or_command_name' => 'endorse_refresh',
+                    'queue_name' => 'endorse_refresh_queue',
+                    'worker_identity' => 'cron',
+                    'concurrency' => $parallel,
+                    'items_requested' => $limit,
+                    'items_processed' => 0,
+                ]);
+            }
             echo json_encode([
                 'status' => true,
                 'processed' => 0,
@@ -358,6 +368,16 @@ class Api_v2 extends CI_Controller
         $items = $claim['items'] ?? [];
         $workerId = $claim['worker_id'] ?? null;
         if (empty($items)) {
+            if (class_exists('Performance_observer')) {
+                Performance_observer::set_workload([
+                    'job_or_command_name' => 'endorse_refresh',
+                    'queue_name' => 'endorse_refresh_queue',
+                    'worker_identity' => (string) ($workerId ?? 'cron'),
+                    'concurrency' => $parallel,
+                    'items_requested' => $limit,
+                    'items_processed' => 0,
+                ]);
+            }
             echo json_encode([
                 'status' => true,
                 'worker' => $workerId,
@@ -381,6 +401,21 @@ class Api_v2 extends CI_Controller
 
         $responses = $this->template->get_social_media_batch($tasks, $parallel, $deadline);
         $summary = $this->endorserefreshqueueservice->applyResults($items, $responses);
+
+        if (class_exists('Performance_observer')) {
+            Performance_observer::set_workload([
+                'job_or_command_name' => 'endorse_refresh',
+                'queue_name' => 'endorse_refresh_queue',
+                'batch_id' => (string) ($workerId ?? ''),
+                'worker_identity' => (string) ($workerId ?? 'cron'),
+                'concurrency' => $parallel,
+                'items_requested' => count($items),
+                'items_processed' => (int) ($summary['processed'] ?? count($items)),
+                'items_succeeded' => (int) ($summary['completed'] ?? 0),
+                'items_failed' => (int) ($summary['failed'] ?? 0),
+                'retry_count' => (int) ($summary['retrying'] ?? 0),
+            ]);
+        }
 
         echo json_encode([
             'status' => true,
