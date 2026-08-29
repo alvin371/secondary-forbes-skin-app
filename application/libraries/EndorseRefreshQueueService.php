@@ -347,12 +347,15 @@ class EndorseRefreshQueueService
             }
         }
 
+        $submittedAt = $this->db->field_exists('submitted_at', 'endorse_refresh_queue')
+            ? 'submitted_at'
+            : 'NULL';
         $metaRows = $this->CI->mymodel->selectWithQuery("
             SELECT
                 MIN(CASE WHEN status = 'pending' THEN created_at END) AS oldest_pending_at,
                 MAX(CASE WHEN status IN ('completed','failed') THEN completed_at END) AS last_completed_at,
                 MAX(CASE WHEN status = 'processing' THEN started_at END) AS last_started_at,
-                MIN(CASE WHEN status = 'submitted' THEN submitted_at END) AS oldest_submitted_at
+                MIN(CASE WHEN status = 'submitted' THEN $submittedAt END) AS oldest_submitted_at
             FROM endorse_refresh_queue
             WHERE 1 = 1
             $where
