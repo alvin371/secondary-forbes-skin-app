@@ -1,0 +1,13 @@
+# Deliberately disabled template. Copy into the MySQL deployment only after
+# reviewing the measured latency distribution and approving the disk budget.
+# This file is not loaded by the application and does not enable logging by itself.
+
+[mysqld]
+# slow_query_log=ON
+# slow_query_log_file=/var/log/mysql/slow.log
+# long_query_time=1
+# min_examined_row_limit=1000
+# log_slow_admin_statements=OFF
+# log_queries_not_using_indexes=OFF
+# log_timestamps=UTC
+# log_output=FILE

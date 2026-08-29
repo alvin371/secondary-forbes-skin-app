@@ -10,11 +10,14 @@ $campaigns = isset($campaigns) ? $campaigns : [];
     .queue-card .value { font-size: 24px; font-weight: 600; margin-top: 4px; }
     .queue-card.pending .value { color: #6b7280; }
     .queue-card.processing .value { color: #2563eb; }
+    .queue-card.submitted .value { color: #7c3aed; }
+    .queue-card.retrying .value { color: #b45309; }
     .queue-card.completed .value { color: #059669; }
     .queue-card.failed .value { color: #dc2626; }
     .queue-status-pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; }
     .queue-status-pill.pending { background: #f3f4f6; color: #374151; }
     .queue-status-pill.processing { background: #dbeafe; color: #1e40af; }
+    .queue-status-pill.submitted { background: #ede9fe; color: #6d28d9; }
     .queue-status-pill.retrying { background: #fef3c7; color: #92400e; }
     .queue-status-pill.completed { background: #d1fae5; color: #065f46; }
     .queue-status-pill.failed { background: #fee2e2; color: #991b1b; }
@@ -68,6 +71,8 @@ $campaigns = isset($campaigns) ? $campaigns : [];
     <div class="queue-summary">
         <div class="queue-card pending"><div class="label">Menunggu</div><div class="value" id="sum-pending">0</div></div>
         <div class="queue-card processing"><div class="label">Berjalan</div><div class="value" id="sum-processing">0</div></div>
+        <div class="queue-card submitted"><div class="label">Menunggu Provider</div><div class="value" id="sum-submitted">0</div></div>
+        <div class="queue-card retrying"><div class="label">Dijadwalkan Ulang</div><div class="value" id="sum-retrying">0</div></div>
         <div class="queue-card completed"><div class="label">Berhasil</div><div class="value" id="sum-completed">0</div></div>
         <div class="queue-card failed"><div class="label">Gagal</div><div class="value" id="sum-failed">0</div></div>
     </div>
@@ -118,6 +123,8 @@ $campaigns = isset($campaigns) ? $campaigns : [];
             <label class="small d-block">Status</label>
             <label class="me-2"><input type="checkbox" class="filter-status" value="pending" checked> Menunggu</label>
             <label class="me-2"><input type="checkbox" class="filter-status" value="processing" checked> Berjalan</label>
+            <label class="me-2"><input type="checkbox" class="filter-status" value="submitted" checked> Menunggu Provider</label>
+            <label class="me-2"><input type="checkbox" class="filter-status" value="retrying" checked> Dijadwalkan Ulang</label>
             <label class="me-2"><input type="checkbox" class="filter-status" value="completed" checked> Berhasil</label>
             <label class="me-2"><input type="checkbox" class="filter-status" value="failed" checked> Gagal</label>
         </div>
@@ -214,6 +221,7 @@ $campaigns = isset($campaigns) ? $campaigns : [];
         const labels = {
             pending: 'Menunggu',
             processing: 'Berjalan',
+            submitted: 'Menunggu Provider',
             retrying: 'Retry',
             completed: 'Berhasil',
             failed: 'Gagal'
@@ -240,13 +248,13 @@ $campaigns = isset($campaigns) ? $campaigns : [];
 
     function setWorkerStatus(text, variant) {
         $('#queueWorkerStatusLabel')
-            .removeClass('pending processing retrying completed failed')
+            .removeClass('pending processing submitted retrying completed failed')
             .addClass(variant)
             .text(text);
     }
 
     function renderLoadError(message) {
-        $('#sum-pending, #sum-processing, #sum-completed, #sum-failed').text('0');
+        $('#sum-pending, #sum-processing, #sum-submitted, #sum-retrying, #sum-completed, #sum-failed').text('0');
         $('#checkAll').prop('checked', false);
         $('#queueHealthBanner').removeClass('stalled').hide();
         $('#queuePageSummary').text('Menampilkan 0 data');
@@ -399,6 +407,8 @@ $campaigns = isset($campaigns) ? $campaigns : [];
             success: function(resp) {
                 $('#sum-pending').text(resp.summary.pending || 0);
                 $('#sum-processing').text(resp.summary.processing || 0);
+                $('#sum-submitted').text(resp.summary.submitted || 0);
+                $('#sum-retrying').text(resp.summary.retrying || 0);
                 $('#sum-completed').text(resp.summary.completed || 0);
                 $('#sum-failed').text(resp.summary.failed || 0);
                 $('#checkAll').prop('checked', false);
@@ -413,7 +423,10 @@ $campaigns = isset($campaigns) ? $campaigns : [];
                     $tbody.append('<tr><td colspan="12" class="text-center text-muted py-4">Tidak ada data dalam rentang waktu yang dipilih.</td></tr>');
                 } else {
                     rows.forEach(function(row) {
-                        const checkable = row.status === 'failed';
+                        // Terminal Threads errors are intentionally not cloned by
+                        // the generic retry endpoint; the dedicated lifecycle owns
+                        // all state transitions for this platform.
+                        const checkable = row.status === 'failed' && row.platform !== 'Threads';
                         const checkbox = checkable
                             ? '<input type="checkbox" class="row-check" value="' + row.id + '">'
                             : '';

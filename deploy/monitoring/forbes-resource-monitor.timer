@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Forbes performance incident collector every 15 seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=15s
+AccuracySec=1s
+Persistent=false
+Unit=forbes-resource-monitor.service
+
+[Install]
+WantedBy=timers.target

@@ -252,6 +252,50 @@ class Api_v2 extends CI_Controller
         return intval($row['acquired'] ?? 0) === 1;
     }
 
+    private function release_cron_lock(string $name): void
+    {
+        try {
+            $this->db->query('SELECT RELEASE_LOCK(?)', [$name]);
+        } catch (Throwable $ignored) {
+            log_message('error', 'cron_lock_release_failed name=' . $name);
+        }
+    }
+
+    /**
+     * Sole asynchronous consumer for Threads endorse statistics.
+     * The generic PHP/Rust refresh paths intentionally exclude Threads.
+     */
+    public function cronjob_threads_scraper()
+    {
+        header('Content-Type: application/json; charset=utf-8');
+        if (env('THREADS_SCRAPER_ENABLED', '0') !== '1') {
+            echo json_encode(['status' => 'skipped', 'reason' => 'disabled']);
+            return;
+        }
+
+        $lockName = 'forbes:cronjob_threads_scraper';
+        if (!$this->acquire_cron_lock($lockName)) {
+            echo json_encode(['status' => 'skipped', 'reason' => 'already_running', 'skipped_already_running' => 1]);
+            return;
+        }
+
+        try {
+            $this->load->library('ThreadsEndorseScraperService');
+            $limit = max(1, min(50, intval(env('SOCIAL_SCRAPER_BATCH_SIZE', 10))));
+            $result = $this->threadsendorsescraperservice->run($limit);
+            if (($result['status'] ?? '') === 'failed') {
+                http_response_code(500);
+            }
+            echo json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } catch (Throwable $e) {
+            log_message('error', 'threads_scraper_endpoint_fatal type=' . get_class($e));
+            http_response_code(500);
+            echo json_encode(['status' => 'failed', 'error_code' => 'threads_scraper_endpoint_fatal', 'message' => 'Worker Threads gagal dijalankan.']);
+        } finally {
+            $this->release_cron_lock($lockName);
+        }
+    }
+
     public function cronjob_endorse_refresh()
     {
         date_default_timezone_set('Asia/Jakarta');
@@ -301,6 +345,16 @@ class Api_v2 extends CI_Controller
 
         if (!empty($claim['skipped'])) {
             $skip = $claim['skipped'];
+            if (class_exists('Performance_observer')) {
+                Performance_observer::set_workload([
+                    'job_or_command_name' => 'endorse_refresh',
+                    'queue_name' => 'endorse_refresh_queue',
+                    'worker_identity' => 'cron',
+                    'concurrency' => $parallel,
+                    'items_requested' => $limit,
+                    'items_processed' => 0,
+                ]);
+            }
             echo json_encode([
                 'status' => true,
                 'processed' => 0,
@@ -314,6 +368,16 @@ class Api_v2 extends CI_Controller
         $items = $claim['items'] ?? [];
         $workerId = $claim['worker_id'] ?? null;
         if (empty($items)) {
+            if (class_exists('Performance_observer')) {
+                Performance_observer::set_workload([
+                    'job_or_command_name' => 'endorse_refresh',
+                    'queue_name' => 'endorse_refresh_queue',
+                    'worker_identity' => (string) ($workerId ?? 'cron'),
+                    'concurrency' => $parallel,
+                    'items_requested' => $limit,
+                    'items_processed' => 0,
+                ]);
+            }
             echo json_encode([
                 'status' => true,
                 'worker' => $workerId,
@@ -337,6 +401,21 @@ class Api_v2 extends CI_Controller
 
         $responses = $this->template->get_social_media_batch($tasks, $parallel, $deadline);
         $summary = $this->endorserefreshqueueservice->applyResults($items, $responses);
+
+        if (class_exists('Performance_observer')) {
+            Performance_observer::set_workload([
+                'job_or_command_name' => 'endorse_refresh',
+                'queue_name' => 'endorse_refresh_queue',
+                'batch_id' => (string) ($workerId ?? ''),
+                'worker_identity' => (string) ($workerId ?? 'cron'),
+                'concurrency' => $parallel,
+                'items_requested' => count($items),
+                'items_processed' => (int) ($summary['processed'] ?? count($items)),
+                'items_succeeded' => (int) ($summary['completed'] ?? 0),
+                'items_failed' => (int) ($summary['failed'] ?? 0),
+                'retry_count' => (int) ($summary['retrying'] ?? 0),
+            ]);
+        }
 
         echo json_encode([
             'status' => true,

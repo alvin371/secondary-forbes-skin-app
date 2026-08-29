@@ -1,0 +1,12 @@
+# Replace the path/user with the deployment's actual MySQL log location.
+# Keep compressed history only as long as the approved retention policy permits.
+<mysql-slow-log-path> {
+    daily
+    rotate 14
+    size 100M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

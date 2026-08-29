@@ -2013,6 +2013,8 @@ class Endorse extends BaseController
         $activityExpr = "CASE
             WHEN q.status = 'pending' THEN q.created_at
             WHEN q.status = 'processing' THEN COALESCE(q.started_at, q.created_at)
+            WHEN q.status = 'submitted' THEN COALESCE(q.submitted_at, q.created_at)
+            WHEN q.status = 'retrying' THEN COALESCE(q.next_retry_at, q.created_at)
             ELSE COALESCE(q.completed_at, q.created_at)
         END";
 
@@ -2024,7 +2026,7 @@ class Endorse extends BaseController
             $where[] = "q.id_campaign = '$id_campaign'";
         }
         if (is_array($statusParam) && !empty($statusParam)) {
-            $allowed = ['pending', 'processing', 'completed', 'failed'];
+            $allowed = ['pending', 'processing', 'submitted', 'retrying', 'completed', 'failed'];
             $clean = array_filter($statusParam, function ($s) use ($allowed) {
                 return in_array($s, $allowed, true);
             });
@@ -2047,6 +2049,8 @@ class Endorse extends BaseController
                 OR q.link_upload LIKE '%$keywordEsc%'
                 OR q.platform LIKE '%$keywordEsc%'
                 OR q.error_message LIKE '%$keywordEsc%'
+                OR q.user_error_message LIKE '%$keywordEsc%'
+                OR q.error_code LIKE '%$keywordEsc%'
             )";
         }
         $whereSql = 'WHERE ' . implode(' AND ', $where);
@@ -2056,7 +2060,9 @@ class Endorse extends BaseController
 
         $rows = $this->mymodel->selectWithQuery("
             SELECT q.id, q.id_endorse, q.id_campaign, q.platform, q.link_upload,
-                   q.status, q.priority, q.attempts, q.max_attempts, q.error_message,
+                   q.status, q.priority, q.attempts, q.max_attempts, q.error_code,
+                   COALESCE(q.user_error_message, q.error_message) AS error_message,
+                   q.provider_job_id, q.submitted_at, q.next_poll_at, q.next_retry_at,
                    q.created_at, q.started_at, q.completed_at, q.retry_source_id,
                    q.created_at AS queued_at,
                    $activityExpr AS activity_at,
@@ -2080,7 +2086,7 @@ class Endorse extends BaseController
         $summaryRows = $this->mymodel->selectWithQuery("
             SELECT status, COUNT(*) c FROM endorse_refresh_queue q $whereSql GROUP BY status
         ");
-        $summary = ['pending' => 0, 'processing' => 0, 'completed' => 0, 'failed' => 0];
+        $summary = ['pending' => 0, 'processing' => 0, 'submitted' => 0, 'retrying' => 0, 'completed' => 0, 'failed' => 0];
         foreach ($summaryRows as $s) {
             $summary[$s['status']] = intval($s['c']);
         }
@@ -2145,7 +2151,7 @@ class Endorse extends BaseController
             FROM endorse_refresh_queue
             GROUP BY status
         ");
-        $summary = ['pending' => 0, 'processing' => 0, 'completed' => 0, 'failed' => 0];
+        $summary = ['pending' => 0, 'processing' => 0, 'submitted' => 0, 'retrying' => 0, 'completed' => 0, 'failed' => 0];
         foreach ($summaryRows as $row) {
             $status = strval($row['status'] ?? '');
             if (isset($summary[$status])) {
