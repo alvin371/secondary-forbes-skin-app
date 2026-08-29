@@ -185,7 +185,7 @@ class EndorseRefreshQueueService
         $rows = $this->CI->mymodel->selectWithQuery("
             SELECT id, id_endorse, id_campaign, platform, link_upload, purpose, priority, max_attempts
             FROM endorse_refresh_queue
-            WHERE id IN ($idList) AND status = 'failed'
+            WHERE id IN ($idList) AND status = 'failed' AND platform != 'Threads'
         ");
 
         if (empty($rows)) {
@@ -291,6 +291,7 @@ class EndorseRefreshQueueService
                 a.finished_at = '$now'
             WHERE a.status = 'processing'
               AND q.status = 'processing'
+              AND q.platform != 'Threads'
               AND q.started_at < (NOW() - INTERVAL $staleMinutes MINUTE)
         ");
 
@@ -298,6 +299,7 @@ class EndorseRefreshQueueService
             UPDATE endorse_refresh_queue
             SET status = 'pending', worker_id = NULL, started_at = NULL, claimed_at = NULL
             WHERE status = 'processing'
+              AND platform != 'Threads'
               AND started_at < (NOW() - INTERVAL $staleMinutes MINUTE)
         ");
         $reset = $this->db->affected_rows();
@@ -321,13 +323,15 @@ class EndorseRefreshQueueService
         $summaryRows = $this->CI->mymodel->selectWithQuery("
             SELECT status, COUNT(*) AS c
             FROM endorse_refresh_queue
-            WHERE status IN ('pending','processing')
+            WHERE status IN ('pending','processing','submitted','retrying')
             $where
             GROUP BY status
         ");
 
         $pending = 0;
         $processing = 0;
+        $submitted = 0;
+        $retrying = 0;
         foreach ($summaryRows as $row) {
             if ($row['status'] === 'pending') {
                 $pending = intval($row['c']);
@@ -335,13 +339,20 @@ class EndorseRefreshQueueService
             if ($row['status'] === 'processing') {
                 $processing = intval($row['c']);
             }
+            if ($row['status'] === 'submitted') {
+                $submitted = intval($row['c']);
+            }
+            if ($row['status'] === 'retrying') {
+                $retrying = intval($row['c']);
+            }
         }
 
         $metaRows = $this->CI->mymodel->selectWithQuery("
             SELECT
                 MIN(CASE WHEN status = 'pending' THEN created_at END) AS oldest_pending_at,
                 MAX(CASE WHEN status IN ('completed','failed') THEN completed_at END) AS last_completed_at,
-                MAX(CASE WHEN status = 'processing' THEN started_at END) AS last_started_at
+                MAX(CASE WHEN status = 'processing' THEN started_at END) AS last_started_at,
+                MIN(CASE WHEN status = 'submitted' THEN submitted_at END) AS oldest_submitted_at
             FROM endorse_refresh_queue
             WHERE 1 = 1
             $where
@@ -354,7 +365,7 @@ class EndorseRefreshQueueService
         $lastActivityAt = $lastStartedAt ?: $lastCompletedAt;
         $isStalled = false;
 
-        if ($pending > 0 && $processing === 0) {
+        if (($pending > 0 || $retrying > 0) && $processing === 0 && $submitted === 0) {
             if (empty($lastActivityAt) || strtotime($lastActivityAt) < strtotime('-' . intval($staleMinutes) . ' minutes')) {
                 $isStalled = true;
             }
@@ -363,10 +374,13 @@ class EndorseRefreshQueueService
         $stall = $isStalled ? $this->diagnoseStall() : null;
 
         return [
-            'active_total' => $pending + $processing,
+            'active_total' => $pending + $processing + $submitted + $retrying,
             'pending_total' => $pending,
             'processing_total' => $processing,
+            'submitted_total' => $submitted,
+            'retrying_total' => $retrying,
             'oldest_pending_at' => $oldestPendingAt,
+            'oldest_submitted_at' => $meta['oldest_submitted_at'] ?? null,
             'last_completed_at' => $lastCompletedAt,
             'last_started_at' => $lastStartedAt,
             'is_stalled' => $isStalled,
@@ -442,7 +456,7 @@ class EndorseRefreshQueueService
             FROM endorse_refresh_queue
             WHERE id_endorse IN ($idList)
               AND purpose = $purpose
-              AND status IN ('pending','processing')
+              AND status IN ('pending','processing','submitted','retrying')
         ");
 
         $active = [];
@@ -666,7 +680,7 @@ class EndorseRefreshQueueService
         $this->db->query("
             UPDATE endorse_refresh_queue
             SET status = 'processing', worker_id = '$worker_id', claimed_at = '$now', started_at = '$now'
-            WHERE status = 'pending' AND worker_id IS NULL
+            WHERE status = 'pending' AND platform != 'Threads' AND worker_id IS NULL
             ORDER BY priority DESC, attempts ASC, created_at ASC
             LIMIT $limit
         ");

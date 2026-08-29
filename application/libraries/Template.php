@@ -1086,7 +1086,16 @@ class Template
             return $this->get_instagram_social_media($url);
         }
         if ($type === 'Threads') {
-            return $this->get_threads_social_media($url, $influencer_id);
+            // Endorse post statistics must never fall back to the synchronous
+            // Graph flow. The dedicated Threads queue is the sole owner of
+            // POST→job_id→grace→GET→apply. Keep a shaped empty payload for
+            // legacy callers that inspect data before checking status.
+            return [
+                'status' => false,
+                'msg' => 'Statistik post Threads diproses melalui antrian scraper Threads.',
+                'data' => ['like' => 0, 'comment' => 0, 'share' => 0, 'collect' => 0, 'view' => 0],
+                'error_class' => 'threads_queue_required',
+            ];
         }
         if ($type !== 'Tiktok') {
             return ['status' => false, 'msg' => 'Platform belum tersedia', 'data' => [], 'error_class' => 'permanent'];
@@ -2274,26 +2283,15 @@ class Template
 
     function get_threads_social_media($url, $influencerId)
     {
-        [$row, $error, $errorClass] = $this->bhskin_threads_influencer($influencerId);
-        if (!$row) return ['status' => false, 'msg' => $error, 'data' => [], 'error_class' => $errorClass];
-        if (!preg_match('#threads\\.(?:com|net)/@[^/]+/post/([A-Za-z0-9_-]+)#', $url, $match)) return ['status' => false, 'msg' => 'Format URL Threads tidak valid: ' . $url, 'data' => [], 'error_class' => 'permanent'];
-        $token = $row['threads_access_token']; $after = ''; $mediaId = '';
-        for ($page = 0; $page < 5 && $mediaId === ''; $page++) {
-            $endpoint = 'https://graph.threads.net/v1.0/me/threads?fields=id,shortcode&limit=100&access_token=' . urlencode($token) . ($after !== '' ? '&after=' . urlencode($after) : '');
-            $payload = $this->bhskin_social_json($endpoint);
-            foreach ($payload['data'] ?? [] as $post) if (($post['shortcode'] ?? '') === $match[1]) { $mediaId = $post['id']; break; }
-            $after = $payload['paging']['cursors']['after'] ?? '';
-            if ($after === '') break;
-        }
-        if ($mediaId === '') return ['status' => false, 'msg' => 'Post Threads tidak ditemukan di akun ini', 'data' => [], 'error_class' => 'permanent'];
-        $metrics = $this->bhskin_threads_metrics_by_id($mediaId, $token);
-        if (empty($metrics)) return ['status' => false, 'msg' => 'Gagal mengambil insights dari Threads API', 'data' => [], 'error_class' => 'transient'];
-        $detail = $this->bhskin_social_json('https://graph.threads.net/v1.0/' . urlencode($mediaId) . '?fields=timestamp&access_token=' . urlencode($token));
-        return ['status' => true, 'msg' => 'Data ditemukan', 'data' => [
-            'content_id' => $mediaId, 'like' => intval($metrics['likes'] ?? 0), 'comment' => intval($metrics['replies'] ?? 0),
-            'share' => intval($metrics['reposts'] ?? 0), 'collect' => intval($metrics['quotes'] ?? 0), 'view' => intval($metrics['views'] ?? 0),
-            'created_at' => !empty($detail['timestamp']) ? date('Y-m-d', strtotime($detail['timestamp'])) : '',
-        ]];
+        // Kept as a compatibility method for older callers, but it must not
+        // retrieve endorse statistics through Graph API. Account/profile Graph
+        // functions above are intentionally unrelated and remain active.
+        return [
+            'status' => false,
+            'msg' => 'Statistik post Threads diproses melalui antrian scraper Threads.',
+            'data' => ['like' => 0, 'comment' => 0, 'share' => 0, 'collect' => 0, 'view' => 0],
+            'error_class' => 'threads_queue_required',
+        ];
     }
 
 }

@@ -127,6 +127,12 @@ class Endorse_sync
      */
     public function classify_response(array $response, string $platform, string $url): array
     {
+        // Threads scraper validates all provider metrics before handing the result
+        // here. A legitimate post may have every counter at zero, which the older
+        // generic heuristic incorrectly treated as an empty response.
+        if (!empty($response['status']) && !empty($response['stats_validated'])) {
+            return ['class' => self::ERR_OK, 'msg' => ''];
+        }
         if (!empty($response['status']) && !empty($response['data'])) {
             $hasMetrics = intval($response['data']['view'] ?? 0) > 0
                 || intval($response['data']['like'] ?? 0) > 0

@@ -76,6 +76,7 @@ $route['api/marketplace/order/download'] = 'Api_v2/marketplace_order_download';
 $route['api/cronjob/endorse-campaign'] = 'Api_v2/cronjob_endorse_campaign';
 $route['api/cronjob/endorse'] = 'Api_v2/cronjob_endorse';
 $route['api/cronjob/endorse-refresh'] = 'Api_v2/cronjob_endorse_refresh';
+$route['api/cronjob/threads-scraper'] = 'Api_v2/cronjob_threads_scraper';
 $route['api/cronjob/endorse-refresh-enqueue-daily'] = 'Api_v2/cronjob_endorse_refresh_enqueue_daily';
 $route['api/cronjob/endorse-refresh-enqueue-all'] = 'Api_v2/cronjob_endorse_refresh_enqueue_all';
 $route['api/cronjob/endorse-rollup'] = 'Api_v2/cronjob_endorse_rollup';
