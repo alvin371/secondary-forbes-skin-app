@@ -7,6 +7,13 @@ TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/forbes-monitor-test.XXXXXX")
 trap 'rm -rf "$TEST_DIR"' EXIT HUP INT TERM
 LOG="$TEST_DIR/log"; STATE="$TEST_DIR/state"
 
+# GNU awk reserves load() as a builtin; the collector must not pass it as a
+# variable name and must not retain an unbound shell reference.
+if grep -qE '\-v load=|\$load' "$COLLECTOR"; then
+    echo 'collector uses the reserved or unbound load variable' >&2
+    exit 1
+fi
+
 run_collector() {
     MONITOR_LOG_DIR="$LOG" MONITOR_STATE_DIR="$STATE" MONITOR_RETENTION_DAYS=999 \
     MONITOR_CPU_THRESHOLD="${MONITOR_CPU_THRESHOLD:-80}" \
