@@ -166,6 +166,8 @@ class Threads_scraper_api
 /** Pure outcome mapping, kept separate from CodeIgniter for regression tests. */
 class Threads_scraper_outcome
 {
+    private const PROVIDER_JOB_ID_MAX_LENGTH = 64;
+
     public static function isValidPostUrl(string $url): bool
     {
         $parts = parse_url(trim($url));
@@ -183,7 +185,10 @@ class Threads_scraper_outcome
     {
         $jobId = $payload['job_id'] ?? ($payload['data']['job_id'] ?? ($payload['id'] ?? null));
         $jobId = is_scalar($jobId) ? trim((string) $jobId) : '';
-        return $jobId === '' ? null : substr($jobId, 0, 191);
+        // The deployed queue column is VARCHAR(64). Reject an incompatible
+        // provider response rather than silently truncating a job ID that will
+        // later be used for polling and idempotency.
+        return $jobId === '' || strlen($jobId) > self::PROVIDER_JOB_ID_MAX_LENGTH ? null : $jobId;
     }
 
     public static function poll(array $payload): array
