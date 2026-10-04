@@ -585,6 +585,15 @@ class Api_v2 extends CI_Controller
         die;
     }
 
+    /** Rebuild dirty endorse campaign snapshots (endorse_campaign_daily) within the cron's time budget. */
+    function cronjob_endorse_snapshot()
+    {
+        header('Content-Type: application/json; charset=utf-8');
+        @set_time_limit(55);
+        $this->load->library('endorse_campaign_snapshot');
+        echo json_encode(['status' => true, 'rebuilt' => $this->endorse_campaign_snapshot->refresh_due(35)]);
+    }
+
     function cronjob_endorse_rollup()
     {
         header('Content-Type: application/json; charset=utf-8');

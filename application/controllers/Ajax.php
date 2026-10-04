@@ -483,7 +483,14 @@ class Ajax extends CI_Controller
                 ";
             }
         }
-		$list = $this->mymodel->selectWithQuery($sql_list);
+		// Unfiltered campaign view in daily mode: read the precomputed daily sums (endorse_campaign_daily).
+		$list = null;
+		if (!$useRollup && $is_dashboard != 'true' && $checkbox[0] == 'true' && !$need_join_campaign
+			&& $filters_common === " AND endorse.id_campaign = '$id_campaign' " && $filters_date_on_endorse === '' && $qry_list === '') {
+			$this->load->library('endorse_campaign_snapshot');
+			$list = $this->endorse_campaign_snapshot->legacy_daily(intval($id_campaign), $start_date, $until_date);
+		}
+		if ($list === null) $list = $this->mymodel->selectWithQuery($sql_list);
 		if (empty($list)) $list = array();
 
 		// ===== Siapkan range label =====
@@ -929,7 +936,8 @@ class Ajax extends CI_Controller
 		$model = new Endorse_analytics_read_model();
 
 		$started = microtime(true);
-		$payload = $model->build($get, $population);
+		$this->load->library('endorse_campaign_snapshot');
+		$payload = $this->endorse_campaign_snapshot->v2_payload($get) ?? $model->build($get, $population);
 		$payload['meta']['mode'] = $mode === 'on' ? 'visible' : 'shadow';
 		$payload['meta']['elapsed_ms'] = round((microtime(true) - $started) * 1000, 1);
 

@@ -262,52 +262,72 @@ class Endorse_analytics_v2
      */
     public static function aggregate_dates(array $seriesByContent, array $dates, array $ctx = []): array
     {
-        $syncTimes = $ctx['sync_times'] ?? [];
-        $dupGroups = $ctx['duplicate_groups'] ?? [];
-        $dupRows = $ctx['duplicate_rows'] ?? [];
+        $buckets = self::empty_buckets($dates);
+        foreach ($seriesByContent as $series) {
+            self::accumulate_series($buckets, $series);
+        }
+        return self::finalize_buckets($buckets, $ctx);
+    }
 
+    /** @return array date => empty bucket, for accumulate_series() */
+    public static function empty_buckets(array $dates): array
+    {
         $buckets = [];
         foreach ($dates as $d) {
             $buckets[$d] = self::empty_bucket($d);
         }
+        return $buckets;
+    }
 
-        foreach ($seriesByContent as $series) {
-            foreach ($series as $date => $day) {
-                if (!isset($buckets[$date])) {
-                    $buckets[$date] = self::empty_bucket($date);
-                }
-                $b =& $buckets[$date];
-
-                $b['jumlah_post']++;
-                $b['total_views_terakhir_disinkronkan'] += intval($day['total']);
-                $b['kenaikan_views'] += intval($day['kenaikan']);
-                $b['opening_views'] += intval($day['opening']);
-
-                switch ($day['state']) {
-                    case self::STATE_BERHASIL:
-                    case self::STATE_DATA_AWAL:
-                        $b['jumlah_berhasil']++;
-                        if ($day['state'] === self::STATE_DATA_AWAL) {
-                            $b['jumlah_data_awal']++;
-                        }
-                        break;
-                    case self::STATE_GAGAL:
-                        $b['jumlah_gagal']++;
-                        $b['jumlah_menggunakan_data_terakhir']++;
-                        break;
-                    case self::STATE_BELUM_PERNAH:
-                        $b['jumlah_gagal']++;
-                        $b['jumlah_belum_pernah_berhasil']++;
-                        break;
-                }
-
-                if (!empty($day['anomali'])) {
-                    $b['jumlah_anomali']++;
-                    $b['selisih_negatif'] += intval($day['selisih_mentah']);
-                }
-                unset($b);
+    /**
+     * Add one content's series to the buckets. Split out of aggregate_dates() so a
+     * caller can stream contents one at a time instead of holding every series.
+     */
+    public static function accumulate_series(array &$buckets, array $series): void
+    {
+        foreach ($series as $date => $day) {
+            if (!isset($buckets[$date])) {
+                $buckets[$date] = self::empty_bucket($date);
             }
+            $b =& $buckets[$date];
+
+            $b['jumlah_post']++;
+            $b['total_views_terakhir_disinkronkan'] += intval($day['total']);
+            $b['kenaikan_views'] += intval($day['kenaikan']);
+            $b['opening_views'] += intval($day['opening']);
+
+            switch ($day['state']) {
+                case self::STATE_BERHASIL:
+                case self::STATE_DATA_AWAL:
+                    $b['jumlah_berhasil']++;
+                    if ($day['state'] === self::STATE_DATA_AWAL) {
+                        $b['jumlah_data_awal']++;
+                    }
+                    break;
+                case self::STATE_GAGAL:
+                    $b['jumlah_gagal']++;
+                    $b['jumlah_menggunakan_data_terakhir']++;
+                    break;
+                case self::STATE_BELUM_PERNAH:
+                    $b['jumlah_gagal']++;
+                    $b['jumlah_belum_pernah_berhasil']++;
+                    break;
+            }
+
+            if (!empty($day['anomali'])) {
+                $b['jumlah_anomali']++;
+                $b['selisih_negatif'] += intval($day['selisih_mentah']);
+            }
+            unset($b);
         }
+    }
+
+    /** Fill the derived per-date fields once every content has been accumulated. */
+    public static function finalize_buckets(array $buckets, array $ctx = []): array
+    {
+        $syncTimes = $ctx['sync_times'] ?? [];
+        $dupGroups = $ctx['duplicate_groups'] ?? [];
+        $dupRows = $ctx['duplicate_rows'] ?? [];
 
         foreach ($buckets as $date => $bucket) {
             $b =& $buckets[$date];
