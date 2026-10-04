@@ -142,6 +142,8 @@ class Ajax extends CI_Controller
 		} else {
 			$checkbox = $_SESSION['checkbox_dashboard_campaign'];
 		}
+		// Read-only from here: release the file-session lock so the page's other AJAX calls aren't queued behind this one.
+		session_write_close();
 		$skip = 0;
 		for ($i = 1; $i <= 7; $i++) {
 			if ($checkbox[$i] == 'false') $skip++;
@@ -887,6 +889,7 @@ class Ajax extends CI_Controller
 	 */
 	public function get_chart_campaign_v2()
 	{
+		session_write_close(); // read-only endpoint: don't hold the session lock
 		$this->load->helper('env');
 
 		$mode = strtolower(trim(strval(env('ENDORSE_ANALYTICS_V2', 'off'))));
@@ -958,6 +961,7 @@ class Ajax extends CI_Controller
 	/** Read-only Analytics V2 data for the endorse cards on the visible list page. */
 	public function get_endorse_cards_v2()
 	{
+		session_write_close(); // read-only endpoint: don't hold the session lock
 		$this->load->helper('env');
 		$mode = strtolower(trim(strval(env('ENDORSE_ANALYTICS_V2', 'off'))));
 		if (!in_array($mode, array('shadow', 'on'), true)) {
@@ -7330,6 +7334,7 @@ gradient_5.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 
 	public function get_analytics_summary()
 	{
+		session_write_close(); // read-only endpoint: don't hold the session lock
 		$id_campaign  = $this->db->escape_str($_GET['id_campaign']);
 		$start_date   = $this->db->escape_str($_GET['start_date'] ?: date('Y-m-01'));
 		$until_date   = $this->db->escape_str($_GET['until_date']  ?: date('Y-m-d'));

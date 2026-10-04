@@ -1005,6 +1005,7 @@ class Endorse extends BaseController
 
     public function item()
     {
+        session_write_close(); // read-only endpoint: don't hold the session lock
         $id_campaign = $_GET['id_campaign'];
 
         $type = $_GET['type'];
@@ -1194,9 +1195,10 @@ class Endorse extends BaseController
 
         $sort_order = strtoupper($sort_order) === 'ASC' ? 'ASC' : 'DESC';
 
-        $count_query = $this->mymodel->selectWithQuery("SELECT COUNT(*) as total FROM endorse 
-            INNER JOIN influencer ON endorse.nama_creator = influencer.username
-            WHERE id_campaign = '$id_campaign' $qry");
+        // Same row shape as the list query below, so page count matches what is listed.
+        $count_query = $this->mymodel->selectWithQuery("SELECT COUNT(*) as total
+            FROM (SELECT * FROM endorse WHERE id_campaign = '$id_campaign' $qry) AS e
+            LEFT JOIN influencer AS i ON e.nama_creator = i.username");
         $total_data = $count_query[0]['total'];
         $data['total_data'] = $total_data;
         $data['page'] = ceil($total_data / $limit);
@@ -1207,10 +1209,17 @@ class Endorse extends BaseController
                 e.*,
                 (e.likes + e.comment + e.share_save) AS engagement,
                 i.contact,
-                i.tipe_kontak
+                i.tipe_kontak,
+                c.type AS creator_type,
+                c.tipe_kontak AS creator_tipe_kontak,
+                c.url AS creator_url,
+                c.cpm_2 AS creator_cpm_2,
+                c.avg_interaksi_2 AS creator_avg_interaksi_2,
+                c.avg_view_2 AS creator_avg_view_2
             FROM
-                (SELECT DISTINCT * FROM endorse WHERE id_campaign = '$id_campaign' $qry) AS e
+                (SELECT * FROM endorse WHERE id_campaign = '$id_campaign' $qry) AS e
             LEFT JOIN influencer AS i ON e.nama_creator = i.username
+            LEFT JOIN influencer AS c ON c.id = e.influencer
             ORDER BY $sort_column $sort_order
             LIMIT $offset, $limit
         ");

@@ -226,10 +226,9 @@ if ($view == 'table') {
                         $v['desc'] = '-';
                     }
             
-                    $creator = $this->mymodel->selectDataOne('influencer', array('id' => $v['influencer']));
-                    $v['type'] = $creator['type'];
-                    $v['tipe_kontak'] = $creator['tipe_kontak'];
-                    $v['url'] = $creator['url'];
+                    $v['type'] = $v['creator_type'];
+                    $v['tipe_kontak'] = $v['creator_tipe_kontak'];
+                    $v['url'] = $v['creator_url'];
             
                     if ($v['type'] == "Tiktok") {
                         $v['img_creator_1'] = base_url() . '/assets/img/icon/icon-tiktok.png';
@@ -268,7 +267,6 @@ if ($view == 'table') {
                     } else {
                         $v['img_creator_2'] = '<img style="width:30px;border-radius:40px; filter: grayscale(100%)!important;" class="mt-0" src="' . $v['img_creator_2'] . '">';
                     }
-                    $creator = $this->mymodel->selectDataOne('influencer', array('id' => $v['influencer']));
                     $v['nama_creator'] = $v['nama_creator'] ?: "-";
                     $v['pic'] = $v['pic'] ?: "-";
                     $v['desc'] = $v['desc'] ?: "-";
@@ -593,10 +591,11 @@ if ($view == 'table') {
             $v['desc'] = '-';
         }
 
-        $creator = $this->mymodel->selectDataOne('influencer', array('id' => $v['influencer']));
-        $v['type'] = $creator['type'];
-        $v['tipe_kontak'] = $creator['tipe_kontak'];
-        $v['url'] = $creator['url'];
+        // influencer fields come joined from Endorse::item() (was one query per card)
+        $creator = ['cpm_2' => $v['creator_cpm_2'], 'avg_interaksi_2' => $v['creator_avg_interaksi_2'], 'avg_view_2' => $v['creator_avg_view_2']];
+        $v['type'] = $v['creator_type'];
+        $v['tipe_kontak'] = $v['creator_tipe_kontak'];
+        $v['url'] = $v['creator_url'];
 
         if ($v['type'] == "Tiktok") {
             $v['img_creator_1'] = base_url() . '/assets/img/icon/icon-tiktok.png';

@@ -498,13 +498,16 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
     // Endorse analytics V2 — additive, flag-gated. When ENDORSE_ANALYTICS_V2 is
     // not 'on' this renders nothing and the legacy chart below is unchanged.
     $this->load->helper('env');
-    if (strtolower(trim(strval(env('ENDORSE_ANALYTICS_V2', 'off')))) === 'on') {
+    $chart_v2_on = strtolower(trim(strval(env('ENDORSE_ANALYTICS_V2', 'off')))) === 'on';
+    if ($chart_v2_on) {
         $this->load->view('endorse/_chart_v2');
     }
+    // With V2 on, the legacy endpoint is still called once but only to fill the summary cards; its chart is hidden.
+    $legacy_chart_style = $chart_v2_on ? 'display:none' : '';
     ?>
     <div class="col-lg-12 mb-3">
         <div class="card summary">
-            <h3 class="text-primary fw-600 mb-1">Grafik Campaign</h3>
+            <h3 class="text-primary fw-600 mb-1"><?= $chart_v2_on ? 'Filter Tanggal' : 'Grafik Campaign' ?></h3>
 
             <!-- Filter Tanggal untuk Grafik -->
             <div class="row my-2">
@@ -520,7 +523,7 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
                 </div>
             </div>
 
-            <div class="row">
+            <div class="row" style="<?= $legacy_chart_style ?>">
                 <div class="col-md-12">
                     <div class="d-grid d-md-flex d-lg-flex">
                         <?php
@@ -536,8 +539,8 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
                     </div>
                 </div>
             </div>
-            <div id="summary-chart"><i class="fa fa-circle-o-notch fa-spin"></i> Memuat data ...</div>
-            <div id="summary-table"><i class="fa fa-circle-o-notch fa-spin"></i> Memuat data ...</div>
+            <div id="summary-chart" style="<?= $legacy_chart_style ?>"><i class="fa fa-circle-o-notch fa-spin"></i> Memuat data ...</div>
+            <div id="summary-table" style="<?= $legacy_chart_style ?>"><i class="fa fa-circle-o-notch fa-spin"></i> Memuat data ...</div>
 
             <script>
                 function setUrlParams(params) {
@@ -599,7 +602,8 @@ if (!empty($detail['start_at']) || !empty($detail['until_at'])) {
                     $('#chart_tanggal').val(startDateMoment.format('DD/MM/YYYY') + ' - ' + endDateMoment.format('DD/MM/YYYY'));
 
                     initializeDefaultCheckboxes();
-                    get_chart();
+                    // No get_chart() here: pushCheckboxState() on load calls it once the checkbox state is saved.
+                    // Calling it here too fetched both charts twice per page load.
                 });
 
 
