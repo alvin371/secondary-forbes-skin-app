@@ -7347,60 +7347,49 @@ gradient_5.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 		$start_date   = $this->db->escape_str($_GET['start_date'] ?: date('Y-m-01'));
 		$until_date   = $this->db->escape_str($_GET['until_date']  ?: date('Y-m-d'));
 
-		// Missing creators (no log in last 2 days)
-		$missing = $this->mymodel->selectWithQuery("
-			SELECT COUNT(DISTINCT e.id) AS cnt
-			FROM endorse e
-			LEFT JOIN endorse_logs el ON el.id_endorse = e.id
-			WHERE e.id_campaign = '$id_campaign'
-			  AND e.status NOT IN ('Done','Reject','REJECT')
-			GROUP BY e.id
-			HAVING MAX(DATE(el.date)) IS NULL OR DATEDIFF(CURDATE(), MAX(DATE(el.date))) >= 2
+		// One scan of endorse_post_daily (one row per post per day, clustered by campaign+date);
+		// missing / top / anomaly are then folded in PHP.
+		$posts = $this->mymodel->selectWithQuery("
+			SELECT id, nama_creator, status NOT IN ('Done','Reject','REJECT') AS active
+			FROM endorse WHERE id_campaign = '$id_campaign' ORDER BY id
 		");
-		$missing_count = count($missing);
+		$per_post = array_column($this->mymodel->selectWithQuery("
+			SELECT id_endorse, SUM(views_gain) AS views_gain, SUM(views_gain < 0) AS minus_days
+			FROM endorse_post_daily
+			WHERE id_campaign = '$id_campaign' AND log_date BETWEEN '$start_date' AND '$until_date'
+			GROUP BY id_endorse
+		"), null, 'id_endorse');
+		$days = $this->mymodel->selectWithQuery("
+			SELECT COUNT(DISTINCT log_date) AS n FROM endorse_post_daily
+			WHERE id_campaign = '$id_campaign' AND log_date BETWEEN '$start_date' AND '$until_date'
+		");
+		// Missing creators: active posts without a log in the last 2 days
+		$recent = array_flip(array_column($this->mymodel->selectWithQuery("
+			SELECT DISTINCT id_endorse FROM endorse_post_daily
+			WHERE id_campaign = '$id_campaign' AND log_date > CURDATE() - INTERVAL 2 DAY
+		"), 'id_endorse'));
+
+		$missing_count = 0;
+		$top_creator = '-';
+		$top_creator_views = 0;
+		$top_gain = null;
+		foreach ($posts as $p) {
+			if ($p['active'] == 1 && !isset($recent[$p['id']])) $missing_count++;
+			$gain = (int)($per_post[$p['id']]['views_gain'] ?? 0);
+			if ($top_gain === null || $gain > $top_gain) {
+				$top_gain = $gain;
+				$top_creator = $p['nama_creator'];
+				$top_creator_views = $gain;
+			}
+		}
 
 		// Avg daily views gain over range
-		$trends_raw = $this->mymodel->selectWithQuery("
-			SELECT DATE(el.date) AS log_date,
-			       SUM(el.views_after - el.views_before) AS daily_views
-			FROM endorse e
-			INNER JOIN endorse_logs el ON el.id_endorse = e.id
-			WHERE e.id_campaign = '$id_campaign'
-			  AND DATE(el.date) BETWEEN '$start_date' AND '$until_date'
-			GROUP BY DATE(el.date)
-		");
-		$total_days   = count($trends_raw);
-		$total_views  = array_sum(array_column($trends_raw, 'daily_views'));
+		$total_days   = (int)$days[0]['n'];
+		$total_views  = array_sum(array_column($per_post, 'views_gain'));
 		$avg_daily    = $total_days > 0 ? round($total_views / $total_days) : 0;
 
-		// Top performer
-		$top = $this->mymodel->selectWithQuery("
-			SELECT e.nama_creator,
-			       COALESCE(SUM(el.views_after - el.views_before), 0) AS views_gain
-			FROM endorse e
-			LEFT JOIN endorse_logs el ON el.id_endorse = e.id
-			  AND DATE(el.date) BETWEEN '$start_date' AND '$until_date'
-			WHERE e.id_campaign = '$id_campaign'
-			GROUP BY e.id
-			ORDER BY views_gain DESC
-			LIMIT 1
-		");
-		$top_creator       = $top ? $top[0]['nama_creator'] : '-';
-		$top_creator_views = $top ? (int)$top[0]['views_gain'] : 0;
-
 		// Anomaly count (negative daily views per creator)
-		$anomaly_raw = $this->mymodel->selectWithQuery("
-			SELECT e.id AS id_endorse,
-			       DATE(el.date) AS log_date,
-			       SUM(el.views_after - el.views_before) AS daily_views
-			FROM endorse e
-			INNER JOIN endorse_logs el ON el.id_endorse = e.id
-			WHERE e.id_campaign = '$id_campaign'
-			  AND DATE(el.date) BETWEEN '$start_date' AND '$until_date'
-			GROUP BY e.id, DATE(el.date)
-			HAVING daily_views < 0
-		");
-		$anomaly_count = count($anomaly_raw);
+		$anomaly_count = (int)array_sum(array_column($per_post, 'minus_days'));
 
 		header('Content-Type: application/json; charset=utf-8');
 		echo json_encode([
@@ -7420,10 +7409,10 @@ gradient_5.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 		$rows = $this->mymodel->selectWithQuery("
 			SELECT e.id, e.nama_creator, e.platform, e.influencer,
 			       e.link_upload, e.status_endorse, e.posting_at,
-			       MAX(DATE(el.date)) AS last_log_date,
-			       DATEDIFF(CURDATE(), MAX(DATE(el.date))) AS days_since_log
+			       MAX(p.log_date) AS last_log_date,
+			       DATEDIFF(CURDATE(), MAX(p.log_date)) AS days_since_log
 			FROM endorse e
-			LEFT JOIN endorse_logs el ON el.id_endorse = e.id
+			LEFT JOIN endorse_post_daily p ON p.id_endorse = e.id
 			WHERE e.id_campaign = '$id_campaign'
 			  AND e.status NOT IN ('Done','Reject','REJECT')
 			GROUP BY e.id
@@ -7452,21 +7441,25 @@ gradient_5.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 		$rows = $this->mymodel->selectWithQuery("
 			SELECT e.id, e.nama_creator, e.platform, e.influencer, e.total_cost,
 			       e.link_upload, e.posting_at,
-			       COALESCE(SUM(el.views_after   - el.views_before), 0)  AS views_gain,
-			       COALESCE(SUM(el.likes_after   - el.likes_before), 0)  AS likes_gain,
-			       COALESCE(SUM(el.comment_after - el.comment_before), 0) AS comment_gain,
-			       COALESCE(SUM(el.share_save_after - el.share_save_before), 0) AS share_save_gain,
-			       COALESCE(SUM(el.likes_after   - el.likes_before
-			                  + el.comment_after - el.comment_before
-			                  + el.share_save_after - el.share_save_before), 0) AS engagement_gain,
-			       CASE WHEN SUM(el.views_after - el.views_before) > 0
-			            THEN (e.total_cost / SUM(el.views_after - el.views_before)) * 1000
+			       COALESCE(g.views_gain, 0)      AS views_gain,
+			       COALESCE(g.likes_gain, 0)      AS likes_gain,
+			       COALESCE(g.comment_gain, 0)    AS comment_gain,
+			       COALESCE(g.share_save_gain, 0) AS share_save_gain,
+			       COALESCE(g.engagement_gain, 0) AS engagement_gain,
+			       CASE WHEN g.views_gain > 0
+			            THEN (e.total_cost / g.views_gain) * 1000
 			            ELSE NULL END AS cpm
 			FROM endorse e
-			LEFT JOIN endorse_logs el ON el.id_endorse = e.id
-			  AND DATE(el.date) BETWEEN '$start_date' AND '$until_date'
+			LEFT JOIN (
+				SELECT id_endorse,
+				       SUM(views_gain) AS views_gain, SUM(likes_gain) AS likes_gain,
+				       SUM(comment_gain) AS comment_gain, SUM(share_save_gain) AS share_save_gain,
+				       SUM(likes_gain + comment_gain + share_save_gain) AS engagement_gain
+				FROM endorse_post_daily
+				WHERE id_campaign = '$id_campaign' AND log_date BETWEEN '$start_date' AND '$until_date'
+				GROUP BY id_endorse
+			) g ON g.id_endorse = e.id
 			WHERE e.id_campaign = '$id_campaign'
-			GROUP BY e.id
 			ORDER BY $sort_col $order
 		");
 
@@ -7483,19 +7476,13 @@ gradient_5.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 		$rows = $this->mymodel->selectWithQuery("
 			SELECT e.id AS id_endorse, e.nama_creator, e.platform,
 			       e.link_upload, e.posting_at, e.status_endorse,
-			       DATE(el.date) AS log_date,
-			       SUM(el.views_after  - el.views_before)        AS views_gain,
-			       MAX(el.views_before)                          AS views_before,
-			       MAX(el.views_after)                           AS views_after,
-			       SUM(el.likes_after  - el.likes_before)        AS likes_gain,
-			       SUM(el.comment_after - el.comment_before)     AS comment_gain,
-			       SUM(el.share_save_after - el.share_save_before) AS share_save_gain
-			FROM endorse e
-			INNER JOIN endorse_logs el ON el.id_endorse = e.id
-			WHERE e.id_campaign = '$id_campaign'
-			  AND DATE(el.date) BETWEEN '$start_date' AND '$until_date'
-			GROUP BY e.id, DATE(el.date)
-			ORDER BY e.id ASC, DATE(el.date) ASC
+			       p.log_date, p.views_gain, p.views_before, p.views_after,
+			       p.likes_gain, p.comment_gain, p.share_save_gain
+			FROM endorse_post_daily p
+			INNER JOIN endorse e ON e.id = p.id_endorse
+			WHERE p.id_campaign = '$id_campaign'
+			  AND p.log_date BETWEEN '$start_date' AND '$until_date'
+			ORDER BY e.id ASC, p.log_date ASC
 		");
 
 		// Restructure into per-creator arrays
@@ -7544,19 +7531,13 @@ gradient_5.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 		$rows = $this->mymodel->selectWithQuery("
 			SELECT e.id AS id_endorse, e.nama_creator, e.platform,
 			       e.link_upload,
-			       DATE(el.date) AS log_date,
-			       SUM(el.views_after  - el.views_before)        AS daily_views,
-			       MAX(el.views_before)                          AS views_before,
-			       MAX(el.views_after)                           AS views_after,
-			       SUM(el.likes_after  - el.likes_before)        AS likes_gain,
-			       SUM(el.comment_after - el.comment_before)     AS comment_gain,
-			       SUM(el.share_save_after - el.share_save_before) AS share_save_gain
-			FROM endorse e
-			INNER JOIN endorse_logs el ON el.id_endorse = e.id
-			WHERE e.id_campaign = '$id_campaign'
-			  AND DATE(el.date) BETWEEN '$start_date' AND '$until_date'
-			GROUP BY e.id, DATE(el.date)
-			ORDER BY e.id ASC, DATE(el.date) ASC
+			       p.log_date, p.views_gain AS daily_views, p.views_before, p.views_after,
+			       p.likes_gain, p.comment_gain, p.share_save_gain
+			FROM endorse_post_daily p
+			INNER JOIN endorse e ON e.id = p.id_endorse
+			WHERE p.id_campaign = '$id_campaign'
+			  AND p.log_date BETWEEN '$start_date' AND '$until_date'
+			ORDER BY e.id ASC, p.log_date ASC
 		");
 
 		// Per-creator averages
