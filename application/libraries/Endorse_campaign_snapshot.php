@@ -121,11 +121,13 @@ class Endorse_campaign_snapshot
         $state = $this->fresh_state($campaignId, $filters['until']);
         if ($state === null) return null;
 
+        // MySQL's JSON type re-sorts object keys; put them back in build()'s order.
+        $keyOrder = Endorse_analytics_v2::empty_buckets([''])[''];
         $byDate = [];
         foreach ($db->query("SELECT log_date, v2_bucket FROM endorse_campaign_daily
             WHERE id_campaign = {$campaignId} AND v2_bucket IS NOT NULL
               AND log_date BETWEEN " . $db->escape($filters['from']) . " AND " . $db->escape($filters['until']))->result_array() as $r) {
-            $byDate[$r['log_date']] = json_decode($r['v2_bucket'], true);
+            $byDate[$r['log_date']] = array_replace($keyOrder, json_decode($r['v2_bucket'], true));
         }
         $obs = $db->query("SELECT COALESCE(SUM(v2_observasi), 0) AS n FROM endorse_campaign_daily
             WHERE id_campaign = {$campaignId} AND log_date <= " . $db->escape($filters['until']))->row_array();
