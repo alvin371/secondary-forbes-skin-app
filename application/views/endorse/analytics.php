@@ -246,6 +246,10 @@ th.sort-asc, th.sort-desc { background: rgba(var(--bs-primary-rgb), 0.06); }
                                 </tbody>
                             </table>
                         </div>
+                        <div class="d-flex justify-content-end align-items-center gap-2 px-3 py-2" id="trends-pager">
+                            <button class="btn btn-sm btn-outline-secondary" id="trends-prev" aria-label="Halaman sebelumnya">&laquo; Sebelumnya</button>
+                            <button class="btn btn-sm btn-outline-secondary" id="trends-next" aria-label="Halaman berikutnya">Berikutnya &raquo;</button>
+                        </div>
                     </div>
 
 
@@ -545,33 +549,45 @@ $('#search-perf, #filter-perf-platform').on('input change', function(){ renderPe
 function goToTrends(name) {
     $('a[href="#tab-trends"]').tab('show');
     $('#search-trends').val(name);
-    setTimeout(function(){ renderTrends(); }, 100);
+    loadTrends(1);
 }
 
-// ---- TRENDS ----
-function loadTrends() {
+// ---- TRENDS (server-side paging, sort, search and platform filter) ----
+var _trendsPage = 1, _trendsTotal = 0, _trendsPerPage = 50, _trendsDates = [], _trendsReq = null;
+function loadTrends(page) {
+    _trendsPage = page || 1;
+    if (_trendsReq) _trendsReq.abort();
     _setLoading(1);
     $('#tbody-trends').html('<tr><td colspan="7" class="text-center py-3"><span class="spinner-border spinner-border-sm text-secondary" role="status" aria-label="Memuat..."></span></td></tr>');
-    $.getJSON(AN_BASE+'ajax/creator-trends?id_campaign='+AN_CAMPAIGN+'&start_date='+anStart()+'&until_date='+anUntil(), function(data) {
-        _trendsData = data;
+    _trendsReq = $.getJSON(AN_BASE+'ajax/creator-trends', {
+        id_campaign: AN_CAMPAIGN, start_date: anStart(), until_date: anUntil(),
+        page: _trendsPage, per_page: _trendsPerPage, sort: $('#trends-sort').val() || 'views_desc',
+        q: $('#search-trends').val() || '', platform: $('#filter-trends-platform').val() || ''
+    }, function(res) {
+        _trendsData = res.creators;
+        _trendsDates = res.dates;
+        _trendsTotal = res.total;
         renderTrends();
-    }).fail(function() {
-        $('#tbody-trends').html('<tr><td colspan="7" class="text-center text-danger py-3"><i class="bi bi-exclamation-circle me-1"></i>Gagal memuat. <button class="btn btn-sm btn-link p-0 text-danger" onclick="loadTrends()">Coba lagi</button></td></tr>');
+    }).fail(function(xhr, status) {
+        if (status === 'abort') return;
+        $('#tbody-trends').html('<tr><td colspan="7" class="text-center text-danger py-3"><i class="bi bi-exclamation-circle me-1"></i>Gagal memuat. <button class="btn btn-sm btn-link p-0 text-danger" onclick="loadTrends(_trendsPage)">Coba lagi</button></td></tr>');
     }).always(function() { _setLoading(-1); });
 }
 function renderTrends() {
     _trendCharts.forEach(function(c) { try { c.destroy(); } catch(e) {} });
     _trendCharts = [];
 
-    var data = _trendsData.slice();
-    var sortVal = $('#trends-sort').val()||'views_desc';
-    if (sortVal==='views_desc') data.sort(function(a,b){ return b.total_views_gain - a.total_views_gain; });
-    else if (sortVal==='views_asc') data.sort(function(a,b){ return a.total_views_gain - b.total_views_gain; });
-    else if (sortVal==='name_asc') data.sort(function(a,b){ return (a.nama_creator||'').localeCompare(b.nama_creator||''); });
-    else if (sortVal==='name_desc') data.sort(function(a,b){ return (b.nama_creator||'').localeCompare(a.nama_creator||''); });
+    var data = _trendsData;
+    var offset = (_trendsPage - 1) * _trendsPerPage;
+    var _tSortVal = $('#trends-sort').val() || 'views_desc';
+    updateSortHeaders('tbl-trends', _tSortVal.indexOf('views') !== -1 ? 'views' : 'name', _tSortVal.endsWith('asc') ? 'asc' : 'desc');
+    $('#trends-prev').prop('disabled', _trendsPage <= 1);
+    $('#trends-next').prop('disabled', offset + data.length >= _trendsTotal);
 
     if (!data.length) {
-        $('#tbody-trends').html('<tr><td colspan="7" class="text-center py-3 text-muted"><i class="bi bi-calendar-x me-1"></i>Tidak ada data log dalam periode ini. Coba perluas rentang tanggal.</td></tr>');
+        var filtered = $('#search-trends').val() || $('#filter-trends-platform').val();
+        $('#tbody-trends').html('<tr><td colspan="7" class="text-center py-3 text-muted"><i class="bi bi-calendar-x me-1"></i>'
+            + (filtered ? 'Tidak ada konten yang cocok dengan filter.' : 'Tidak ada data log dalam periode ini. Coba perluas rentang tanggal.') + '</td></tr>');
         $('#count-trends').text('');
         return;
     }
@@ -579,9 +595,8 @@ function renderTrends() {
     $.each(data, function(i, r) {
         var total = r.total_views_gain || 0;
         var canvasId = 'spark-'+r.id_endorse;
-        var searchable = (r.nama_creator||'')+' '+(r.platform||'')+' '+(r.link_upload||'');
-        html += '<tr data-searchable="'+htmlEsc(searchable)+'" data-platform="'+htmlEsc(r.platform||'')+'">';
-        html += '<td class="text-muted fs-11">'+(i+1)+'</td>';
+        html += '<tr>';
+        html += '<td class="text-muted fs-11">'+(offset+i+1)+'</td>';
         html += '<td style="min-width:140px;max-width:180px">'
               + '<div class="fw-500 text-truncate">'+htmlEsc(r.nama_creator)+'</div>'
               + '<div class="fs-10">'+linkIcon(r.link_upload)+'</div>'
@@ -598,22 +613,22 @@ function renderTrends() {
         html += '</tr>';
     });
     $('#tbody-trends').html(html);
-    $('#count-trends').text(data.length+' konten');
-    var _tSortVal = $('#trends-sort').val() || 'views_desc';
-    updateSortHeaders('tbl-trends', _tSortVal.indexOf('views') !== -1 ? 'views' : 'name', _tSortVal.endsWith('asc') ? 'asc' : 'desc');
+    $('#count-trends').text((offset+1)+'–'+(offset+data.length)+' dari '+_trendsTotal+' konten');
 
-    // Render sparklines
+    // Render sparklines (only days with a log, as before)
     $.each(data, function(i, r) {
         var ctx = document.getElementById('spark-'+r.id_endorse);
         if (!ctx) return;
+        var labels = [], values = [];
+        $.each(r.values, function(j, v) { if (v !== null) { labels.push(_trendsDates[j]); values.push(v); } });
         ctx.setAttribute('role', 'img');
         ctx.setAttribute('aria-label', 'Trend views harian: ' + htmlEsc(r.nama_creator));
         _trendCharts.push(new Chart(ctx, {
             type: 'bar',
             data: {
-                labels: r.dates,
-                datasets: [{ data: r.values, borderWidth: 0,
-                    backgroundColor: r.values.map(function(v){
+                labels: labels,
+                datasets: [{ data: values, borderWidth: 0,
+                    backgroundColor: values.map(function(v){
                         return v<0?'rgba(220,53,69,0.75)':'rgba(13,110,253,0.6)';
                     })
                 }]
@@ -628,7 +643,6 @@ function renderTrends() {
         }));
     });
 
-    applyTrendsFilter();
 }
 window._showTrendDetail = function(endorse_id) {
     var r = null;
@@ -636,14 +650,21 @@ window._showTrendDetail = function(endorse_id) {
         if (_trendsData[i].id_endorse == endorse_id) { r = _trendsData[i]; break; }
     }
     if (!r) return;
-    showDetailModal(r.nama_creator, (r.platform||'')+(r.link_upload?' | '+r.link_upload:''), r.daily_detail);
+    _setLoading(1);
+    $.getJSON(AN_BASE+'ajax/creator-trend-detail', { id_endorse: r.id_endorse, start_date: anStart(), until_date: anUntil() }, function(detail) {
+        showDetailModal(r.nama_creator, (r.platform||'')+(r.link_upload?' | '+r.link_upload:''), detail);
+    }).fail(function() {
+        toastr.error('Gagal memuat detail scraping.');
+    }).always(function() { _setLoading(-1); });
 };
-function applyTrendsFilter() {
-    var vis = applyRowFilter('tbody-trends', $('#search-trends').val(), $('#filter-trends-platform').val(), '');
-    $('#count-trends').text(vis+' konten');
-}
-$('#search-trends, #filter-trends-platform').on('input change', applyTrendsFilter);
-$('#trends-sort').on('change', renderTrends);
+var _trendsSearchTimer = null;
+$('#search-trends').on('input', function() {
+    clearTimeout(_trendsSearchTimer);
+    _trendsSearchTimer = setTimeout(function() { loadTrends(1); }, 300);
+});
+$('#filter-trends-platform, #trends-sort').on('change', function() { loadTrends(1); });
+$('#trends-prev').on('click', function() { loadTrends(_trendsPage - 1); });
+$('#trends-next').on('click', function() { loadTrends(_trendsPage + 1); });
 
 // ---- SORT HELPERS ----
 function updateSortHeaders(tableId, activeCol, order) {
@@ -690,7 +711,7 @@ $(document).ready(function() {
             : (cur === 'name_asc'  ? 'name_desc'  : 'name_asc');
         $('#trends-sort').val(next);
         updateSortHeaders('tbl-trends', col, next.endsWith('desc') ? 'desc' : 'asc');
-        renderTrends();
+        loadTrends(1);
     });
 
     // Column-header sort: Missing (client sort)

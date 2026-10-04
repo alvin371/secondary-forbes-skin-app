@@ -7469,49 +7469,107 @@ gradient_5.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 
 	public function get_creator_trends()
 	{
+		session_write_close(); // read-only endpoint: don't hold the session lock
 		$id_campaign = $this->db->escape_str($_GET['id_campaign']);
 		$start_date  = $this->db->escape_str($_GET['start_date'] ?: date('Y-m-d', strtotime('-13 days')));
 		$until_date  = $this->db->escape_str($_GET['until_date']  ?: date('Y-m-d'));
+		$per_page    = min(100, max(1, (int)($_GET['per_page'] ?? 50)));
+		$page        = max(1, (int)($_GET['page'] ?? 1));
+		[$sort_key, $sort_dir] = [
+			'views_asc' => ['total_views_gain', 1],
+			'name_asc'  => ['nama_creator', 1],
+			'name_desc' => ['nama_creator', -1],
+		][$_GET['sort'] ?? ''] ?? ['total_views_gain', -1];
+
+		// Same matching as the old client-side applyRowFilter(): substring of "creator platform url", any case.
+		$filter = '';
+		if (($_GET['q'] ?? '') !== '') {
+			$q = $this->db->escape_like_str($_GET['q']);
+			$filter .= " AND CONCAT(COALESCE(e.nama_creator,''), ' ', COALESCE(e.platform,''), ' ', COALESCE(e.link_upload,'')) LIKE '%$q%' ESCAPE '!'";
+		}
+		if (($_GET['platform'] ?? '') !== '') {
+			$filter .= " AND e.platform = '" . $this->db->escape_str($_GET['platform']) . "'";
+		}
+
+		// Every matching creator (one row each, a few thousand at most), then one page of daily values.
+		$creators = $this->mymodel->selectWithQuery("
+			SELECT e.id AS id_endorse, e.nama_creator, e.platform,
+			       e.link_upload, e.posting_at, e.status_endorse, g.total_views_gain
+			FROM (
+				SELECT id_endorse, SUM(views_gain) AS total_views_gain
+				FROM endorse_post_daily
+				WHERE id_campaign = '$id_campaign' AND log_date BETWEEN '$start_date' AND '$until_date'
+				GROUP BY id_endorse
+			) g
+			INNER JOIN endorse e ON e.id = g.id_endorse
+			WHERE 1 $filter
+		");
+		foreach ($creators as $i => $c) {
+			$creators[$i]['total_views_gain'] = (int)$c['total_views_gain'];
+		}
+		// Sorted here: ~80 ms cheaper than ORDER BY on the varchar name, ties by id as before.
+		usort($creators, function ($a, $b) use ($sort_key, $sort_dir) {
+			$c = $sort_key === 'nama_creator'
+				? strcasecmp((string)$a['nama_creator'], (string)$b['nama_creator'])
+				: $a['total_views_gain'] <=> $b['total_views_gain'];
+			return $sort_dir * $c ?: (int)$a['id_endorse'] <=> (int)$b['id_endorse'];
+		});
+		$total = count($creators);
+		$creators = array_slice($creators, ($page - 1) * $per_page, $per_page);
+
+		$by_id = [];
+		foreach ($creators as $i => $c) {
+			$by_id[$c['id_endorse']] = $i;
+		}
+		$rows = $by_id ? $this->mymodel->selectWithQuery("
+			SELECT id_endorse, log_date, views_gain
+			FROM endorse_post_daily
+			WHERE id_campaign = '$id_campaign' AND log_date BETWEEN '$start_date' AND '$until_date'
+			  AND id_endorse IN (" . implode(',', array_map('intval', array_keys($by_id))) . ")
+		") : [];
+
+		// Columnar: dates once, values[i] aligned with dates[i] (null = no log that day).
+		$dates = array_values(array_unique(array_column($rows, 'log_date')));
+		sort($dates);
+		$pos = array_flip($dates);
+		foreach ($creators as $i => $c) {
+			$creators[$i]['values'] = array_fill(0, count($dates), null);
+		}
+		foreach ($rows as $r) {
+			$creators[$by_id[$r['id_endorse']]]['values'][$pos[$r['log_date']]] = (int)$r['views_gain'];
+		}
+
+		header('Content-Type: application/json; charset=utf-8');
+		echo json_encode([
+			'dates'    => $dates,
+			'total'    => $total,
+			'page'     => $page,
+			'per_page' => $per_page,
+			'creators' => $creators,
+		]);
+	}
+
+	/** Daily scraping detail of one post, loaded when its modal opens. */
+	public function get_creator_trend_detail()
+	{
+		session_write_close(); // read-only endpoint: don't hold the session lock
+		$id_endorse = (int)$_GET['id_endorse'];
+		$start_date = $this->db->escape_str($_GET['start_date'] ?: date('Y-m-d', strtotime('-13 days')));
+		$until_date = $this->db->escape_str($_GET['until_date']  ?: date('Y-m-d'));
 
 		$rows = $this->mymodel->selectWithQuery("
-			SELECT e.id AS id_endorse, e.nama_creator, e.platform,
-			       e.link_upload, e.posting_at, e.status_endorse,
-			       p.log_date, p.views_gain, p.views_before, p.views_after,
-			       p.likes_gain, p.comment_gain, p.share_save_gain
-			FROM endorse_post_daily p
-			INNER JOIN endorse e ON e.id = p.id_endorse
-			WHERE p.id_campaign = '$id_campaign'
-			  AND p.log_date BETWEEN '$start_date' AND '$until_date'
-			ORDER BY e.id ASC, p.log_date ASC
+			SELECT log_date, views_before, views_after, views_gain, likes_gain, comment_gain, share_save_gain
+			FROM endorse_post_daily
+			WHERE id_endorse = $id_endorse AND log_date BETWEEN '$start_date' AND '$until_date'
+			ORDER BY log_date ASC
 		");
-
-		// Restructure into per-creator arrays
-		$creators = [];
+		$detail = [];
 		foreach ($rows as $row) {
-			$key = $row['id_endorse'];
-			if (!isset($creators[$key])) {
-				$creators[$key] = [
-					'id_endorse'      => $row['id_endorse'],
-					'nama_creator'    => $row['nama_creator'],
-					'platform'        => $row['platform'],
-					'link_upload'     => $row['link_upload'],
-					'posting_at'      => $row['posting_at'],
-					'status_endorse'  => $row['status_endorse'],
-					'total_views_gain'=> 0,
-					'dates'           => [],
-					'values'          => [],
-					'daily_detail'    => [],
-				];
-			}
-			$vgain = (int)$row['views_gain'];
-			$creators[$key]['total_views_gain'] += $vgain;
-			$creators[$key]['dates'][]  = $row['log_date'];
-			$creators[$key]['values'][] = $vgain;
-			$creators[$key]['daily_detail'][] = [
+			$detail[] = [
 				'date'           => $row['log_date'],
 				'views_before'   => (int)$row['views_before'],
 				'views_after'    => (int)$row['views_after'],
-				'views_gain'     => $vgain,
+				'views_gain'     => (int)$row['views_gain'],
 				'likes_gain'     => (int)$row['likes_gain'],
 				'comment_gain'   => (int)$row['comment_gain'],
 				'share_save_gain'=> (int)$row['share_save_gain'],
@@ -7519,76 +7577,7 @@ gradient_5.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 		}
 
 		header('Content-Type: application/json; charset=utf-8');
-		echo json_encode(array_values($creators));
-	}
-
-	public function get_anomalies()
-	{
-		$id_campaign = $this->db->escape_str($_GET['id_campaign']);
-		$start_date  = $this->db->escape_str($_GET['start_date'] ?: date('Y-m-01'));
-		$until_date  = $this->db->escape_str($_GET['until_date']  ?: date('Y-m-d'));
-
-		$rows = $this->mymodel->selectWithQuery("
-			SELECT e.id AS id_endorse, e.nama_creator, e.platform,
-			       e.link_upload,
-			       p.log_date, p.views_gain AS daily_views, p.views_before, p.views_after,
-			       p.likes_gain, p.comment_gain, p.share_save_gain
-			FROM endorse_post_daily p
-			INNER JOIN endorse e ON e.id = p.id_endorse
-			WHERE p.id_campaign = '$id_campaign'
-			  AND p.log_date BETWEEN '$start_date' AND '$until_date'
-			ORDER BY e.id ASC, p.log_date ASC
-		");
-
-		// Per-creator averages
-		$creator_sums  = [];
-		$creator_counts = [];
-		foreach ($rows as $row) {
-			$k = $row['id_endorse'];
-			if (!isset($creator_sums[$k])) { $creator_sums[$k] = 0; $creator_counts[$k] = 0; }
-			$creator_sums[$k]   += (int)$row['daily_views'];
-			$creator_counts[$k] += 1;
-		}
-		$creator_avg = [];
-		foreach ($creator_sums as $k => $s) {
-			$creator_avg[$k] = $creator_counts[$k] > 0 ? $s / $creator_counts[$k] : 0;
-		}
-
-		$anomalies = [];
-		foreach ($rows as $row) {
-			$k     = $row['id_endorse'];
-			$views = (int)$row['daily_views'];
-			$avg   = $creator_avg[$k] ?? 0;
-			$reason = null;
-
-			if ($views < 0) {
-				$reason = 'Minus (data koreksi)';
-			} elseif ($views === 0) {
-				$reason = 'Views stagnan';
-			} elseif ($avg > 0 && $views > 3 * $avg) {
-				$reason = 'Spike tidak wajar';
-			}
-
-			if ($reason !== null) {
-				$anomalies[] = [
-					'nama_creator'   => $row['nama_creator'],
-					'platform'       => $row['platform'],
-					'link_upload'    => $row['link_upload'],
-					'log_date'       => $row['log_date'],
-					'daily_views'    => $views,
-					'views_before'   => (int)$row['views_before'],
-					'views_after'    => (int)$row['views_after'],
-					'likes_gain'     => (int)$row['likes_gain'],
-					'comment_gain'   => (int)$row['comment_gain'],
-					'share_save_gain'=> (int)$row['share_save_gain'],
-					'creator_avg'    => round($avg),
-					'reason'         => $reason,
-				];
-			}
-		}
-
-		header('Content-Type: application/json; charset=utf-8');
-		echo json_encode($anomalies);
+		echo json_encode($detail);
 	}
 
 }
