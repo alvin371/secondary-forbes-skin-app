@@ -142,6 +142,8 @@ class Ajax extends CI_Controller
 		} else {
 			$checkbox = $_SESSION['checkbox_dashboard_campaign'];
 		}
+		// Read-only from here: release the file-session lock so the page's other AJAX calls aren't queued behind this one.
+		session_write_close();
 		$skip = 0;
 		for ($i = 1; $i <= 7; $i++) {
 			if ($checkbox[$i] == 'false') $skip++;
@@ -481,7 +483,14 @@ class Ajax extends CI_Controller
                 ";
             }
         }
-		$list = $this->mymodel->selectWithQuery($sql_list);
+		// Unfiltered campaign view in daily mode: read the precomputed daily sums (endorse_campaign_daily).
+		$list = null;
+		if (!$useRollup && $is_dashboard != 'true' && $checkbox[0] == 'true' && !$need_join_campaign
+			&& $filters_common === " AND endorse.id_campaign = '$id_campaign' " && $filters_date_on_endorse === '' && $qry_list === '') {
+			$this->load->library('endorse_campaign_snapshot');
+			$list = $this->endorse_campaign_snapshot->legacy_daily(intval($id_campaign), $start_date, $until_date);
+		}
+		if ($list === null) $list = $this->mymodel->selectWithQuery($sql_list);
 		if (empty($list)) $list = array();
 
 		// ===== Siapkan range label =====
@@ -887,6 +896,7 @@ class Ajax extends CI_Controller
 	 */
 	public function get_chart_campaign_v2()
 	{
+		session_write_close(); // read-only endpoint: don't hold the session lock
 		$this->load->helper('env');
 
 		$mode = strtolower(trim(strval(env('ENDORSE_ANALYTICS_V2', 'off'))));
@@ -926,7 +936,8 @@ class Ajax extends CI_Controller
 		$model = new Endorse_analytics_read_model();
 
 		$started = microtime(true);
-		$payload = $model->build($get, $population);
+		$this->load->library('endorse_campaign_snapshot');
+		$payload = $this->endorse_campaign_snapshot->v2_payload($get) ?? $model->build($get, $population);
 		$payload['meta']['mode'] = $mode === 'on' ? 'visible' : 'shadow';
 		$payload['meta']['elapsed_ms'] = round((microtime(true) - $started) * 1000, 1);
 
@@ -958,6 +969,7 @@ class Ajax extends CI_Controller
 	/** Read-only Analytics V2 data for the endorse cards on the visible list page. */
 	public function get_endorse_cards_v2()
 	{
+		session_write_close(); // read-only endpoint: don't hold the session lock
 		$this->load->helper('env');
 		$mode = strtolower(trim(strval(env('ENDORSE_ANALYTICS_V2', 'off'))));
 		if (!in_array($mode, array('shadow', 'on'), true)) {
@@ -7330,6 +7342,7 @@ gradient_5.addColorStop(0.75, "rgba(225, 225, 225, 0)")
 
 	public function get_analytics_summary()
 	{
+		session_write_close(); // read-only endpoint: don't hold the session lock
 		$id_campaign  = $this->db->escape_str($_GET['id_campaign']);
 		$start_date   = $this->db->escape_str($_GET['start_date'] ?: date('Y-m-01'));
 		$until_date   = $this->db->escape_str($_GET['until_date']  ?: date('Y-m-d'));

@@ -1,3 +1,13 @@
+<script>
+    // ponytail: dashboard data fetching disabled — values were never updating. Set to false to restore live fetches.
+    // See docs/TECH_DEBT.md (TD-1) for removed server-side code and bugs to fix before re-enabling.
+    window.DASHBOARD_STATIC = true;
+    window.dashboardPlaceholder = function() {
+        $('[id^="summary-"], [id^="progress-"]').html('-');
+        $('#get-chart').html('<p class="text-muted text-center p-3 mb-0">Data dashboard sementara dinonaktifkan.</p>');
+        $('#get-table').html('');
+    };
+</script>
 <style>
     .owl-theme .owl-dots .owl-dot.active span,
     .owl-theme .owl-dots .owl-dot:hover span {
@@ -883,6 +893,7 @@ if ($_GET['type'] == "Yearly") {
                             </div>
                             <script>
                                 function refresh_chart(code, title) {
+                                    if (window.DASHBOARD_STATIC) return window.dashboardPlaceholder();
                                     $.ajax({
                                         dataType: "json",
                                         url: '<?= base_url() ?>ajax/get-chart?type=<?= $type ?>&brand=<?= $_GET['brand'] ?>&channel=<?= $_GET['channel'] ?>&start_date=<?= $start_date ?>&until_date=<?= $until_date ?>&start_year=<?= $start_year ?>&until_year=<?= $until_year ?>&start_month=<?= $start_month ?>&until_month=<?= $until_month ?>&start_week=<?= $start_week ?>&until_week=<?= $until_week ?>&code=' + code + '&title=' + title,
@@ -894,6 +905,7 @@ if ($_GET['type'] == "Yearly") {
                                 }
 
                                 function checkbox() {
+                                    if (window.DASHBOARD_STATIC) return;
                                     var checkboxStatus = {};
                                     var i = 0;
                                     $(".c-checkbox").each(function() {
@@ -1179,6 +1191,12 @@ if ($_GET['type'] == "Yearly") {
                 },
 
                 loadLaporanTab: function() {
+                    if (window.DASHBOARD_STATIC) {
+                        $('#laporan-carousel').show();
+                        window.dashboardPlaceholder();
+                        this.loadedTabs.add('laporan-panel');
+                        return;
+                    }
                     // Show content and hide skeleton
                     $('#laporan-panel .laporan-loading-skeleton').hide();
                     $('#laporan-carousel').show();
@@ -1192,6 +1210,13 @@ if ($_GET['type'] == "Yearly") {
                 },
 
                 loadGrafikAndChannelTab: function() {
+                    if (window.DASHBOARD_STATIC) {
+                        $('#grafik-panel .grafik-content').show();
+                        window.dashboardPlaceholder();
+                        this.loadedTabs.add('grafik-panel');
+                        this.isLoading.delete('grafik-panel');
+                        return;
+                    }
                     const self = this;
 
                     // Show loading skeleton
@@ -1556,6 +1581,10 @@ if ($_GET['type'] == "Yearly") {
                     theme: 'light',
                     maxWidth: 350,
                     onShow(instance) {
+                        if (window.DASHBOARD_STATIC) {
+                            instance.setContent('<div class="p-2">-</div>');
+                            return;
+                        }
                         const brand = document.getElementById('brand')?.value || '';
                         const startDate = '<?= $start_date ?>';
                         const untilDate = '<?= $until_date ?>';
@@ -1770,6 +1799,10 @@ if ($_GET['type'] == "Yearly") {
                     theme: 'light',
                     maxWidth: 350,
                     onShow(instance) {
+                        if (window.DASHBOARD_STATIC) {
+                            instance.setContent('<div class="p-2">-</div>');
+                            return;
+                        }
                         const brand = document.getElementById('brand')?.value || '';
                         const startDate = '<?= $start_date ?>';
                         const untilDate = '<?= $until_date ?>';

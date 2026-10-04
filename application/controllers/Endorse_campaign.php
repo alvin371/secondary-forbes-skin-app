@@ -3,6 +3,7 @@
 defined('BASEPATH') or exit('No direct script access allowed');
 
 require_once APPPATH . 'core/BaseController.php';
+require_once APPPATH . 'libraries/Endorse_campaign_query.php';
 class Endorse_campaign extends BaseController
 {
     public function __construct()
@@ -91,47 +92,14 @@ class Endorse_campaign extends BaseController
         $data['brands'] = $query;
 
 
-        $qry = "";
-
-        $qry = " DATE(start_at) >= '$start_date'
-        AND DATE(start_at) <= '$until_date' ";
-
-        if ($brand) {
-            $qry .= " AND brand = '$brand' ";
-        }
-
-        if ($marketplace) {
-            $qry .= " AND marketplace = '$marketplace' ";
-        }
-
-        if ($keyword) {
-            if ($keyword_category == "Judul Campaign") {
-                $qry .= " AND title LIKE '%$keyword%' ";
-            } else if ($keyword_category == "SKU") {
-                $qry .= " AND sku LIKE '%$keyword%' ";
-            } else if ($keyword_category == "Brand") {
-                $qry .= " AND brand LIKE '%$keyword%' ";
-            } else if ($keyword_category == "Keterangan") {
-                $qry .= " AND endorse_campaign.desc LIKE '%$keyword%' ";
-            } else if ($keyword_category == "Status") {
-                $qry .= " AND status = '$keyword' ";
-            }
-        }
-
-        $internal = $_GET['p'];
-        if ($internal == "internal") {
-            $qry .= " AND is_internal = '1' ";
-        } else {
-            $qry .= " AND is_internal = '0' ";
-        }
-
+        $qry = Endorse_campaign_query::build_where($_GET, [$this->db, 'escape_str'], $today);
 
         $query = $this->mymodel->selectWithQuery("SELECT COUNT(id) AS count
         FROM endorse_campaign
         WHERE $qry
         ");
 
-        $data['page'] = CEIL($query[0]['count'] / 30);
+        $data['page'] = CEIL($query[0]['count'] / Endorse_campaign_query::PER_PAGE);
 
         $data['notif'] = '<p class="mb-1"><label class="text-notif">' . $this->template->separator_only($query[0]['count']) . ' data ditemukan!</label></p>';
 
@@ -156,92 +124,20 @@ class Endorse_campaign extends BaseController
     {
 
 
-        if ($_GET['keyword_category']) {
-            $keyword_category = $_GET['keyword_category'];
-        } else {
-            $keyword_category = "Judul Campaign";
-        }
-        $data['keyword_category'] = $keyword_category;
-        $keyword = $_GET['keyword'];
+        $qry = Endorse_campaign_query::build_where($_GET, [$this->db, 'escape_str'], DATE("Y-m-d"));
 
-        // Define variables to prevent undefined variable errors
-        $today = DATE("Y-m-d");
-        $brand = isset($_GET['brand']) ? $_GET['brand'] : null;
-        $marketplace = isset($_GET['marketplace']) ? $_GET['marketplace'] : null;
+        $limit = Endorse_campaign_query::PER_PAGE;
+        $offset = Endorse_campaign_query::offset($_GET['page'] ?? 1);
 
-        if ($_GET['start_date']) {
-            $start_date = $_GET['start_date'];
-        } else {
-            $start_date = DATE("Y-m-01");
-            $start_date = DATE('Y-m-d', strtotime($today . " -1 years"));
-        }
-        if ($_GET['until_date']) {
-            $until_date = $_GET['until_date'];
-        } else {
-            $until_date = DATE('Y-m-d', strtotime($today . " +2 years"));
-        }
-        $qry = "";
-
-        $qry = " DATE(start_at) >= '$start_date'
-        AND DATE(start_at) <= '$until_date' ";
-
-        if ($brand) {
-            $qry .= " AND brand = '$brand' ";
-        }
-
-        if ($marketplace) {
-            $qry .= " AND marketplace = '$marketplace' ";
-        }
-
-        if ($keyword) {
-            if ($keyword_category == "Judul Campaign") {
-                $qry .= " AND title LIKE '%$keyword%' ";
-            } else if ($keyword_category == "SKU") {
-                $qry .= " AND sku LIKE '%$keyword%' ";
-            } else if ($keyword_category == "Brand") {
-                $qry .= " AND brand LIKE '%$keyword%' ";
-            } else if ($keyword_category == "Keterangan") {
-                $qry .= " AND endorse_campaign.desc LIKE '%$keyword%' ";
-            } else if ($keyword_category == "Status") {
-                $qry .= " AND status = '$keyword' ";
-            }
-        }
-        $internal = $_GET['p'];
-        if ($internal == "internal") {
-            $qry .= " AND is_internal = '1' ";
-        } else {
-            $qry .= " AND is_internal = '0' ";
-        }
-
-        $limit = 30;
-
-        $current_page = $_GET['page'];
-
-        if ($current_page <= 1) {
-            $offset = 0;
-        } else {
-            $offset = ($current_page - 1) * $limit;
-        }
-
-        $query = $this->mymodel->selectWithQuery("
-        SELECT endorse_campaign.*,
-               COALESCE(
-                   (SELECT MAX(sync_at)
-                    FROM endorse
-                    WHERE id_campaign = endorse_campaign.id
-                      AND sync_at IS NOT NULL
-                      AND sync_at != ''),
-                   endorse_campaign.updated_at,
-                   endorse_campaign.created_at
-               ) AS latest_update_at
+        $query = $this->mymodel->selectWithQuery("SELECT endorse_campaign.*
         FROM endorse_campaign
-        WHERE $qry 
-        ORDER BY start_at DESC
+        WHERE $qry
+        ORDER BY start_at DESC, id DESC
         LIMIT $offset, $limit
         ");
 
-
-        $data['data'] = $query;
+        $stats = $query ? $this->mymodel->selectWithQuery(Endorse_campaign_query::stats_sql(array_column($query, 'id'))) : [];
+        $data['data'] = Endorse_campaign_query::merge_stats($query ?: [], $stats ?: []);
 
         $data['start'] = $offset;
         $this->load->view("endorse_campaign/item", $data);

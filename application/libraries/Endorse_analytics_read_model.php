@@ -232,17 +232,7 @@ class Endorse_analytics_read_model
     /** Build one stable daily series for every canonical campaign/PIC/content. */
     private function canonical_series(array $rows, array $scopePosts, array $dates): array
     {
-        $items = [];
-        foreach ($scopePosts as $id => $post) {
-            $key = $this->canonical_key($post, $id);
-            if (!isset($items[$key])) {
-                $items[$key] = ['entered' => $post['entered'], 'raw_ids' => []];
-            }
-            $items[$key]['raw_ids'][] = intval($id);
-            if ($post['entered'] !== '' && ($items[$key]['entered'] === '' || $post['entered'] < $items[$key]['entered'])) {
-                $items[$key]['entered'] = $post['entered'];
-            }
-        }
+        $items = $this->scope_items($scopePosts);
 
         $byRaw = [];
         foreach ($rows as $row) {
@@ -255,37 +245,64 @@ class Endorse_analytics_read_model
         }
 
         $out = [];
-        $firstReportingDate = $dates[0] ?? '';
         foreach ($items as $key => $item) {
             sort($item['raw_ids'], SORT_NUMERIC);
             // A duplicate group contributes only its smallest raw endorse ID.
             // This is deterministic and leaves every raw row untouched.
             $sourceId = $item['raw_ids'][0] ?? 0;
-            $observations = [];
-            $prior = null;
-            $everBefore = false;
-            foreach ($byRaw[$sourceId] ?? [] as $row) {
-                $d = strval($row['log_date']);
-                // The selected date window still needs the last trustworthy
-                // value from before it. Keep it as the predecessor rather than
-                // assigning its accumulated history to the first displayed day.
-                if ($firstReportingDate !== '' && $d < $firstReportingDate) {
-                    $prior = intval($row['views_after']);
-                    $everBefore = true;
-                    continue;
-                }
-                if (!in_array($d, $dates, true)) continue;
-                $observations[$d] = intval($row['views_after']);
-                if ($prior === null && isset($row['prev_after']) && $row['prev_after'] !== null) {
-                    $prior = intval($row['prev_after']);
-                    $everBefore = true;
-                }
-            }
-            $out[$key] = Endorse_analytics_v2::build_content_series(
-                $observations, $dates, $item['entered'] ?: null, $prior, $everBefore
-            );
+            $out[$key] = $this->item_series($item, $byRaw[$sourceId] ?? [], $dates);
         }
         return $out;
+    }
+
+    /** Canonical items (key => entered, raw_ids) for the in-scope posts. */
+    private function scope_items(array $scopePosts): array
+    {
+        $items = [];
+        foreach ($scopePosts as $id => $post) {
+            $key = $this->canonical_key($post, $id);
+            if (!isset($items[$key])) {
+                $items[$key] = ['entered' => $post['entered'], 'raw_ids' => []];
+            }
+            $items[$key]['raw_ids'][] = intval($id);
+            if ($post['entered'] !== '' && ($items[$key]['entered'] === '' || $post['entered'] < $items[$key]['entered'])) {
+                $items[$key]['entered'] = $post['entered'];
+            }
+        }
+        return $items;
+    }
+
+    /** One canonical content's daily series from its source post's observation rows. */
+    private function item_series(array $item, array $sourceRows, array $dates): array
+    {
+        $firstReportingDate = $dates[0] ?? '';
+        $inRange = array_flip($dates); // isset() instead of in_array(): the snapshot builder walks ~250 dates x 500k rows
+        $observations = [];
+        $prior = null;
+        $everBefore = false;
+        foreach ($sourceRows as $row) {
+            $d = strval($row['log_date']);
+            // The selected date window still needs the last trustworthy
+            // value from before it. Keep it as the predecessor rather than
+            // assigning its accumulated history to the first displayed day.
+            if ($firstReportingDate !== '' && $d < $firstReportingDate) {
+                $prior = intval($row['views_after']);
+                $everBefore = true;
+                continue;
+            }
+            if (!isset($inRange[$d])) continue;
+            // Only the FIRST in-range row's predecessor can lie before the range.
+            // Later rows' prev_after is an in-range observation; taking it made a
+            // post's first sync look like a value carried from before it existed.
+            if (empty($observations) && $prior === null && isset($row['prev_after']) && $row['prev_after'] !== null) {
+                $prior = intval($row['prev_after']);
+                $everBefore = true;
+            }
+            $observations[$d] = intval($row['views_after']);
+        }
+        return Endorse_analytics_v2::build_content_series(
+            $observations, $dates, $item['entered'] ?: null, $prior, $everBefore
+        );
     }
 
     private function canonical_key(array $post, int $fallbackId): string
@@ -766,5 +783,198 @@ class Endorse_analytics_read_model
             ) x WHERE x.log_date BETWEEN {$from} AND {$until}";
 
         return $this->CI->mymodel->selectWithQuery($sql) ?: [];
+    }
+
+    // ------------------------------------------------------------- snapshot
+
+    /**
+     * Every V2 day bucket from the campaign's first log up to $until, plus the
+     * legacy chart's daily sums, for the endorse_campaign_daily snapshot.
+     *
+     * Same derivation as build() over [first log .. until] (scope, canonical
+     * items, item_series, accumulate), but endorse_logs is streamed one post at
+     * a time: ~2 MB instead of ~800 MB for the largest campaign. A V2 day only
+     * depends on observations up to that day, so any window is a slice of this.
+     */
+    public function build_campaign_snapshot(int $campaignId, string $until): array
+    {
+        $db = $this->CI->db;
+        $filters = Endorse_analytics_v2::build_filters(
+            ['id_campaign' => $campaignId, 'start_date' => $until, 'until_date' => $until], [$db, 'escape_str']
+        );
+        $scope = $this->scope_posts($filters);
+        $duplicates = $this->duplicate_content_ids($filters);
+        $items = $this->scope_items($scope);
+
+        $first = $db->query("SELECT MIN(l.log_date) AS d FROM endorse e JOIN endorse_logs l ON l.id_endorse = e.id
+            WHERE e.id_campaign = {$campaignId}")->row_array();
+        $from = min(strval($first['d'] ?? '') ?: $until, $until);
+        $dates = Endorse_analytics_v2::date_range($from, $until);
+
+        // Items in scope before $from never have an observation before $from, so
+        // on any earlier date they are 'belum pernah berhasil'. Keep their entry
+        // dates so the reader can rebuild those days without storing them.
+        $preFrom = ['undated' => 0, 'entered' => []];
+        $sourceOf = [];
+        foreach ($items as $key => $item) {
+            $sourceOf[min($item['raw_ids'])] = $key;
+            if ($item['entered'] === '') $preFrom['undated']++;
+            elseif ($item['entered'] < $from) $preFrom['entered'][$item['entered']] = ($preFrom['entered'][$item['entered']] ?? 0) + 1;
+        }
+
+        // Fallback keys for posts with observations but outside scope, as canonical_series() derives them from rows.
+        $postInfo = [];
+        foreach ($db->query("SELECT id, id_campaign, pic, REGEXP_SUBSTR(link_upload,'[0-9]{15,}') AS content_id
+            FROM endorse WHERE id_campaign = {$campaignId}")->result_array() as $r) {
+            $postInfo[intval($r['id'])] = $r;
+        }
+
+        $buckets = Endorse_analytics_v2::empty_buckets($dates);
+        $syncTimes = [];
+        $observasi = [];
+        $legacy = [];
+        $done = [];
+
+        $flush = function ($id, array $rows) use (&$sourceOf, &$items, &$buckets, &$done, $dates) {
+            if ($id === null || !isset($sourceOf[$id])) return;
+            $key = $sourceOf[$id];
+            Endorse_analytics_v2::accumulate_series($buckets, $this->item_series($items[$key], $rows, $dates));
+            $done[$key] = true;
+        };
+
+        $res = $db->conn_id->query("SELECT l.id_endorse, l.log_date, l.views_after, l.created_at, l.updated_at,
+                   l.views, l.likes, l.comment, l.share_save, l.total_cost
+              FROM endorse e
+              JOIN endorse_campaign c ON c.id = e.id_campaign
+              JOIN endorse_logs l ON l.id_endorse = e.id
+             WHERE e.id_campaign = {$campaignId}
+             ORDER BY l.id_endorse, l.log_date", MYSQLI_USE_RESULT);
+        if ($res === false) {
+            throw new RuntimeException('snapshot stream failed: ' . $db->conn_id->error);
+        }
+
+        $current = null;
+        $rows = [];
+        $prevAfter = null;
+        while ($row = $res->fetch_assoc()) {
+            $id = intval($row['id_endorse']);
+            $d = strval($row['log_date']);
+            if ($id !== $current) {
+                $flush($current, $rows);
+                $current = $id;
+                $rows = [];
+                $prevAfter = null;
+            }
+
+            // Legacy chart: per-day sums of every log row (see Ajax::get_chart_campaign, delta mode).
+            $g =& $legacy[$d];
+            $g['views'] = ($g['views'] ?? 0) + max(intval($row['views'] ?? 0), 0);
+            $g['likes'] = ($g['likes'] ?? 0) + max(intval($row['likes'] ?? 0), 0);
+            $g['comment'] = ($g['comment'] ?? 0) + max(intval($row['comment'] ?? 0), 0);
+            $g['share_save'] = ($g['share_save'] ?? 0) + max(intval($row['share_save'] ?? 0), 0);
+            if ($row['total_cost'] !== null) $g['cost'] = ($g['cost'] ?? 0) + floatval($row['total_cost']);
+            elseif (!array_key_exists('cost', $g)) $g['cost'] = null; // SQL SUM over only NULLs is NULL
+            $g['endorse'] = ($g['endorse'] ?? 0) + 1;
+            unset($g);
+
+            // V2 observation population: load_observations().
+            if (intval($row['views_after']) <= 0 || $d > $until) continue;
+            $observasi[$d] = ($observasi[$d] ?? 0) + 1;
+            $at = strval($row['updated_at'] ?? $row['created_at'] ?? '');
+            if ($at !== '') {
+                if (!isset($syncTimes[$d]['terbaru']) || $at > $syncTimes[$d]['terbaru']) $syncTimes[$d]['terbaru'] = $at;
+                if (!isset($syncTimes[$d]['terlama']) || $at < $syncTimes[$d]['terlama']) $syncTimes[$d]['terlama'] = $at;
+            }
+            if (!isset($sourceOf[$id])) {
+                $p = $postInfo[$id] ?? [];
+                $key = $this->canonical_key(['content_id' => $p['content_id'] ?? '', 'id_campaign' => $p['id_campaign'] ?? 0,
+                    'pic' => $p['pic'] ?? ''], $id);
+                if (!isset($items[$key])) {
+                    $items[$key] = ['entered' => $d, 'raw_ids' => [$id]];
+                    $sourceOf[$id] = $key;
+                }
+            }
+            $rows[] = ['log_date' => $d, 'views_after' => $row['views_after'], 'prev_after' => $prevAfter];
+            $prevAfter = $row['views_after'];
+        }
+        $flush($current, $rows);
+        $res->free();
+
+        foreach ($items as $key => $item) {
+            if (empty($done[$key])) {
+                Endorse_analytics_v2::accumulate_series($buckets, $this->item_series($item, [], $dates));
+            }
+        }
+
+        return [
+            'from' => $from,
+            'until' => $until,
+            'buckets' => Endorse_analytics_v2::finalize_buckets($buckets, [
+                'sync_times' => $syncTimes,
+                'duplicate_groups' => array_fill_keys($dates, count($duplicates)),
+                'duplicate_rows' => array_fill_keys($dates, array_sum($duplicates)),
+            ]),
+            'observasi' => $observasi,
+            'legacy' => $legacy,
+            'pre_from' => $preFrom,
+            'dup_groups' => count($duplicates),
+            'dup_rows' => array_sum($duplicates),
+        ];
+    }
+
+    /**
+     * build()'s payload for a campaign-only request, from stored snapshot data.
+     *
+     * @param array $state  dup_groups, dup_rows, built_from, pre_from (decoded), built_at
+     * @param array $byDate date => stored V2 bucket for the requested window
+     * @param int   $observasi observation rows up to the window end
+     */
+    public static function payload_from_snapshot(array $filters, array $state, array $byDate, int $observasi): array
+    {
+        $dates = [];
+        foreach (Endorse_analytics_v2::date_range($filters['from'], $filters['until']) as $d) {
+            if (isset($byDate[$d])) {
+                $dates[] = $byDate[$d];
+                continue;
+            }
+            // Before the first log: every in-scope item is 'belum pernah berhasil'.
+            $n = intval($state['pre_from']['undated'] ?? 0);
+            foreach ($state['pre_from']['entered'] ?? [] as $entered => $count) {
+                if ($entered <= $d) $n += intval($count);
+            }
+            $b = Endorse_analytics_v2::empty_buckets([$d]);
+            $day = [$d => Endorse_analytics_v2::resolve_content_day([])];
+            for ($i = 0; $i < $n; $i++) Endorse_analytics_v2::accumulate_series($b, $day);
+            $b = Endorse_analytics_v2::finalize_buckets($b, [
+                'duplicate_groups' => [$d => intval($state['dup_groups'])],
+                'duplicate_rows' => [$d => intval($state['dup_rows'])],
+            ]);
+            $dates[] = $b[$d];
+        }
+
+        $summary = Endorse_analytics_v2::summarize($dates, !empty($filters['has_date_filter']));
+        $summary['jumlah_grup_duplikat'] = intval($state['dup_groups']);
+        $summary['jumlah_baris_duplikat'] = intval($state['dup_rows']);
+
+        $meta = [
+            'versi_kalkulasi' => Endorse_analytics_v2::CALCULATION_VERSION,
+            'populasi' => Endorse_analytics_v2::POPULATION_CANONICAL,
+            'dari' => $filters['from'],
+            'sampai' => $filters['until'],
+            'rentang_inklusif' => true,
+            'kolom_sumber' => 'endorse_logs.views_after',
+            'jumlah_baris_observasi' => $observasi,
+            'pencocokan_pic' => $filters['pic_mode'],
+        ];
+
+        return [
+            'ringkasan' => $summary,
+            'harian' => $dates,
+            'definisi_metrik' => Endorse_analytics_v2::definisi_metrik(),
+            'meta' => $meta,
+            'summary' => $summary,
+            'dates' => $dates,
+            'metric_definition' => Endorse_analytics_v2::definisi_metrik(),
+        ];
     }
 }

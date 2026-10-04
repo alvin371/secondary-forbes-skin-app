@@ -95,24 +95,9 @@ foreach ($data as $v) {
                     </div>
                     <div class="col-md-4">
                         <?php
-                        $id = $v['id'];
-                        $dat = $this->mymodel->selectWithQuery("SELECT COUNT(id) as count
-                        FROM endorse
-                        WHERE id_campaign = '$id'");
-                        $a = $dat[0]['count'];
-                        $dat = $this->mymodel->selectWithQuery("SELECT COUNT(id) as count
-                        FROM endorse
-                        WHERE id_campaign = '$id'
-                        AND status_endorse = 'Posted Content'
-                        ");
-                        $b = $dat[0]['count'];
-                        $dat = $this->mymodel->selectWithQuery("SELECT COUNT(id) as count
-                        FROM endorse
-                        WHERE id_campaign = '$id'
-                        AND status_endorse = 'Reject'
-                        ");
-                        $c = $dat[0]['count'];
-
+                        $a = $v['total_post'];
+                        $b = $v['posted'];
+                        $c = $v['rejected'];
                         ?>
                         <p class="mb-1 text-black">Total Pengajuan Post : <?= separator_only($a) ?></p>
                         <p class="mb-1 text-black">Posted : <?= separator_only($b) ?></p>

@@ -107,19 +107,13 @@ class Endorse_sync
     }
 
     /**
-     * Returns a canonical endorse_logs subquery with one latest row per (id_endorse, date).
+     * endorse_logs with one row per (id_endorse, date).
+     * Guaranteed by uniq_id_endorse_date (migration 20260713010000), so no dedupe
+     * subquery is needed — the old MAX(id) GROUP BY scanned the whole table per call.
      */
     public function canonical_logs_from(string $alias = 'endorse_logs'): string
     {
-        return "(
-            SELECT l.*
-            FROM endorse_logs l
-            INNER JOIN (
-                SELECT id_endorse, date, MAX(id) AS max_id
-                FROM endorse_logs
-                GROUP BY id_endorse, date
-            ) latest ON latest.max_id = l.id
-        ) {$alias}";
+        return "endorse_logs {$alias}";
     }
 
     /**

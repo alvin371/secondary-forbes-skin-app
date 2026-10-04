@@ -80,6 +80,7 @@ $route['api/cronjob/threads-scraper'] = 'Api_v2/cronjob_threads_scraper';
 $route['api/cronjob/endorse-refresh-enqueue-daily'] = 'Api_v2/cronjob_endorse_refresh_enqueue_daily';
 $route['api/cronjob/endorse-refresh-enqueue-all'] = 'Api_v2/cronjob_endorse_refresh_enqueue_all';
 $route['api/cronjob/endorse-rollup'] = 'Api_v2/cronjob_endorse_rollup';
+$route['api/cronjob/endorse-snapshot'] = 'Api_v2/cronjob_endorse_snapshot';
 $route['api/cronjob/tiktok-sync'] = 'Api_v2/cronjob_tiktok_sync';
 $route['api/endorse-refresh/claim'] = 'Api_v2/endorse_refresh_claim';
 $route['api/endorse-refresh/result'] = 'Api_v2/endorse_refresh_result';
