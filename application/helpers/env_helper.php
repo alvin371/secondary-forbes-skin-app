@@ -1,5 +1,6 @@
 <?php
-defined('BASEPATH') or exit('No direct script access allowed');
+// Composer autoloads this file, so also allow it under PHPUnit (no CI bootstrap there).
+defined('BASEPATH') or defined('PHPUNIT_COMPOSER_INSTALL') or exit('No direct script access allowed');
 
 /**
  * Load environment variables from .env file

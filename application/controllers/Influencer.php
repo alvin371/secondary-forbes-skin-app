@@ -287,6 +287,9 @@ class Influencer extends BaseController
 
         $id = $_POST['id'];
         $dt = $_POST['dt'];
+        $current = $this->mymodel->selectDataOne('influencer', ['id' => intval($id)]) ?: [];
+        $url_warning = $this->apply_valid_profile_url($dt, $current);
+        if ($url_warning === false) return;
         $dt['updated_at'] = DATE("Y-m-d H:i:s");
         $dt['updated_by'] = $user['id'];
 
@@ -317,7 +320,7 @@ class Influencer extends BaseController
         }
 
         if ($this->db->update('influencer', $dt, array('id' => $id))) {
-            $msg = 'Update data berhasil!';
+            $msg = 'Update data berhasil!' . ($url_warning !== '' ? ' Catatan: ' . htmlspecialchars($url_warning, ENT_QUOTES, 'UTF-8') : '');
             echo $this->template->alert_success($msg);
         } else {
             $msg = 'Update data tidak berhasil!';
@@ -346,6 +349,46 @@ class Influencer extends BaseController
     }
 
 
+    /**
+     * Store the canonical profile URL for the selected type (share/post links are resolved to
+     * the owner's profile). Returns false after echoing the error, or a warning ('' if none).
+     *
+     * An invalid URL that the user did not touch (legacy row) does not block saving the other
+     * fields: it is kept, and the row is parked as invalid_url so no sync fetches a wrong account.
+     * A new account (type or username changed) re-enters the automatic sync.
+     */
+    private function apply_valid_profile_url(array &$dt, array $current = [])
+    {
+        $this->load->helper('social_platform');
+        $type = strval($dt['type'] ?? '');
+        $check = $this->template->normalize_influencer_profile_url($type, $dt['url'] ?? '');
+        $untouched = !empty($current)
+            && trim(strval($current['url'] ?? '')) === trim(strval($dt['url'] ?? ''))
+            && strval($current['type'] ?? '') === $type;
+        if (!$check['ok']) {
+            if (!$untouched) {
+                echo $this->template->alert_danger(htmlspecialchars($check['msg'], ENT_QUOTES, 'UTF-8'));
+                return false;
+            }
+            if ($this->template->influencer_sync_state_ready()) {
+                $dt['sync_status'] = 'invalid_url';
+                $dt['sync_error'] = function_exists('mb_substr') ? mb_substr($check['msg'], 0, 255) : substr($check['msg'], 0, 255);
+            }
+            return 'URL profil belum valid, sync otomatis dihentikan sampai URL diperbaiki. ' . $check['msg'];
+        }
+        $dt['url'] = $check['url'];
+
+        $before = validate_social_profile_url(strval($current['type'] ?? ''), strval($current['url'] ?? ''));
+        $sameAccount = !empty($current) && $before['ok']
+            && strval($current['type'] ?? '') === $type
+            && strtolower($before['url']) === strtolower($check['url']);
+        if (!$sameAccount) {
+            $dt += $this->template->influencer_sync_reset();
+            if (!empty($current)) $dt['sync_at'] = null; // first in line for the next sync run
+        }
+        return '';
+    }
+
     public function store()
     {
         $user = $_SESSION['user'];
@@ -354,6 +397,7 @@ class Influencer extends BaseController
         $dt = $_POST['dt'];
 
         $dt['username']   = trim(strval($dt['username'] ?? ''));
+        if ($this->apply_valid_profile_url($dt) === false) return;
         $dt['created_at'] = date("Y-m-d H:i:s");
         $dt['created_by'] = $user['id'];
 
@@ -702,8 +746,8 @@ class Influencer extends BaseController
         $views = intval($aggregate['views'] ?? 0);
         $totalCost = floatval($aggregate['total_cost'] ?? 0);
         $now = date('Y-m-d H:i:s');
+        // sync_at is written only after the external fetch succeeds (below / syncTiktokProfile).
         $internalUpdate = [
-            'sync_at' => $now,
             'frequency' => intval($aggregate['frequency'] ?? 0),
             'total_cost' => $totalCost,
             'view' => $views,
@@ -722,6 +766,13 @@ class Influencer extends BaseController
         $this->db->update('influencer', $internalUpdate, ['id' => $id]);
 
         $type = strval($influencer['type'] ?? '');
+        if ($this->template->influencer_sync_parked($influencer)) {
+            echo $this->template->alert_danger('Sync eksternal dihentikan untuk akun ini ('
+                . htmlspecialchars(strval($influencer['sync_error'] ?? $influencer['sync_status']), ENT_QUOTES, 'UTF-8')
+                . '). Perbaiki URL/Type di form edit untuk mengaktifkan sync lagi. Data internal endorse sudah diperbarui.');
+            return;
+        }
+
         if ($type === 'Tiktok') {
             $result = $this->template->syncTiktokProfile('influencer', $id, $type, strval($influencer['url'] ?? ''));
             echo !empty($result['status'])
@@ -740,6 +791,7 @@ class Influencer extends BaseController
         }
 
         if (empty($profile['status'])) {
+            $this->template->record_influencer_sync($influencer, $profile);
             echo $this->template->alert_danger($profile['msg'] ?? 'Gagal mengambil profil.');
             return;
         }
@@ -761,24 +813,17 @@ class Influencer extends BaseController
             ? $this->template->get_threads_post_list($id)
             : $this->template->get_post_list($type, strval($profileData['account_id'] ?? ''));
         if (empty($posts['status'])) {
+            $this->template->record_influencer_sync($influencer, $posts);
             echo $this->template->alert_danger($posts['msg'] ?? 'Gagal mengambil daftar post.');
             return;
         }
 
-        $totals = ['like' => 0, 'comment' => 0, 'collect' => 0, 'share' => 0, 'view' => 0];
-        $items = array_slice(is_array($posts['data'] ?? null) ? $posts['data'] : [], 0, 10);
-        foreach ($items as $post) {
-            foreach ($totals as $metric => $unused) {
-                $totals[$metric] += intval($post[$metric] ?? 0);
-            }
-        }
-
-        $count = count($items);
-        $avgView = $count > 0 ? $totals['view'] / $count : 0;
-        $avgInteraction = $count > 0
-            ? ($totals['like'] + $totals['comment'] + $totals['collect'] + $totals['share']) / $count
-            : 0;
-        $er = $avgView > 0 ? ($avgInteraction / $avgView * 100) : 0;
+        $summary = $this->template->summarize_social_posts(is_array($posts['data'] ?? null) ? $posts['data'] : []);
+        $totals = $summary['sum'];
+        $count = $summary['count'];
+        $avgView = $summary['avg_view'];
+        $avgInteraction = $summary['avg_interaksi'];
+        $er = $summary['er'];
         $ratecard = floatval($influencer['ratecard'] ?? 0);
         $metricUpdate = [
             'sync_at' => $now,
@@ -797,7 +842,12 @@ class Influencer extends BaseController
         if ($userId > 0) {
             $metricUpdate['updated_by'] = strval($userId);
         }
+        if ($this->db->field_exists('ig_photo_posts', 'influencer')) {
+            $metricUpdate['ig_photo_posts'] = $summary['photo_posts'];
+            $metricUpdate['ig_hidden_like_posts'] = $summary['hidden_like_posts'];
+        }
         $this->db->update('influencer', $metricUpdate, ['id' => $id]);
+        $this->template->record_influencer_sync($influencer, $posts);
 
         $today = date('Y-m-d');
         $logRows = $this->mymodel->selectWithQuery("

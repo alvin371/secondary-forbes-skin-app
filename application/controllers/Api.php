@@ -2769,7 +2769,9 @@ class Api extends CI_Controller
         $today = DATE("Y-m-d");
         $today = DATE('Y-m-d', strtotime($today . " -7 days"));
         $todayy = $today;
-        $list = $this->mymodel->selectWithQuery("SELECT * FROM influencer WHERE status = 'Aktif' AND DATE(sync_at) <= '$today' OR DATE(sync_at) IS NULL AND url != '' LIMIT 10");
+        // Parenthesised: without them "AND ... OR ..." also picked inactive rows whose sync_at is NULL.
+        $gate = $this->template->influencer_sync_state_ready() ? ' AND ' . $this->template->influencer_sync_eligible_sql(DATE("Y-m-d H:i:s")) : '';
+        $list = $this->mymodel->selectWithQuery("SELECT * FROM influencer WHERE status = 'Aktif' AND url != '' AND (DATE(sync_at) <= '$today' OR sync_at IS NULL)$gate LIMIT 10");
         foreach ($list as $kl => $vl) {
             $id = $vl['id'];
             $query = $vl;

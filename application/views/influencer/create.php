@@ -77,7 +77,7 @@
 
 		<div class="col-md-6">
 			<label>URL</label>
-			<input type="text" class="form-control" name="dt[url]" value="<?= $data['url'] ?>">
+			<input type="text" class="form-control" name="dt[url]" value="<?= $data['url'] ?>" placeholder="Link profil, contoh: https://www.tiktok.com/@username atau https://www.instagram.com/username">
 		</div>
 
 		<div class="col-md-6">

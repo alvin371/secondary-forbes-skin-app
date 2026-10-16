@@ -289,4 +289,7 @@ define('VIEWPATH', $view_folder . DIRECTORY_SEPARATOR);
  *
  * And away we go...
  */
+// Define our env() before any controller requires vendor/autoload.php, whose
+// illuminate/support env() needs vlucas/phpdotenv (not installed) and fatals.
+require_once APPPATH . 'helpers/env_helper.php';
 require_once BASEPATH . 'core/CodeIgniter.php';
