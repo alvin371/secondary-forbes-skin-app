@@ -87,6 +87,27 @@ final class EndorseLinkOwnerTest extends TestCase
         $this->assertSame('https://vt.tiktok.com/ZS4DKJSLk/', $r['url']);
     }
 
+    public function testPicksInfluencerByUsernameOrProfileUrl(): void
+    {
+        // Shapes from prod (2026-10-16): typo username with correct URL, "(2)" duplicate, "@" prefix.
+        $rows = [
+            ['id' => 55, 'username' => 'notesbymama', 'type' => 'Tiktok', 'url' => 'https://www.tiktok.com/@notes_mama?is_from_webapp=1', 'status' => 'Aktif'],
+            ['id' => 285, 'username' => 'mayyasaragih', 'type' => 'Tiktok', 'url' => 'https://www.tiktok.com/@mayyasaragih', 'status' => 'Aktif'],
+            ['id' => 305, 'username' => 'mayyasaragih(2)', 'type' => 'Tiktok', 'url' => 'https://www.tiktok.com/@mayyasaragih?is_from_webapp=1', 'status' => 'Aktif'],
+            ['id' => 35, 'username' => '@bidan.khory', 'type' => 'Tiktok', 'url' => '', 'status' => 'Aktif'],
+            ['id' => 900, 'username' => 'sara', 'type' => 'Tiktok', 'url' => 'https://www.tiktok.com/@sara', 'status' => 'Aktif'],
+        ];
+        $this->assertSame(55, pick_influencer_for_handle($rows, 'Tiktok', 'notes_mama')['id']);
+        $this->assertSame(285, pick_influencer_for_handle($rows, 'Tiktok', 'mayyasaragih')['id']);
+        // The creator picked in the form wins among the matches (editing the duplicate row).
+        $this->assertSame(305, pick_influencer_for_handle($rows, 'Tiktok', 'mayyasaragih', 305)['id']);
+        // A pick that does not match the link does not hijack it.
+        $this->assertSame(285, pick_influencer_for_handle($rows, 'Tiktok', 'mayyasaragih', 55)['id']);
+        $this->assertSame(35, pick_influencer_for_handle($rows, 'Tiktok', 'bidan.khory')['id']);
+        // Prefix of another handle is not a match: sara.choi is a new creator.
+        $this->assertNull(pick_influencer_for_handle($rows, 'Tiktok', 'sara.choi'));
+    }
+
     public function testUnknownOwnerFails(): void
     {
         $r = $this->template([], [])->endorse_link_owner('Instagram', 'https://www.instagram.com/p/C_AKET4Svj_/');

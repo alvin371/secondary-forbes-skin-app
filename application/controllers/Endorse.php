@@ -2580,11 +2580,22 @@ class Endorse extends BaseController
         $dt['link_upload'] = $link['url'];
 
         if ($link['username'] !== '') {
-            $influencerData = $this->mymodel->selectDataOne('influencer', ['username' => $link['username']]);
+            $handle = $link['username'];
+            // Candidates by username or profile URL; pick_influencer_for_handle() decides.
+            $candidates = $this->db->group_start()
+                ->where('username', $handle)
+                ->or_like('username', $handle, 'after')
+                ->or_like('url', $handle)
+                ->group_end()
+                ->get('influencer')->result_array();
+            $influencerData = pick_influencer_for_handle($candidates, strval($dt['platform'] ?? ''), $handle, intval($dt['influencer'] ?? 0));
             if (!$influencerData) {
-                $msg = "Username '" . htmlspecialchars($link['username'], ENT_QUOTES, 'UTF-8') . "' tidak ditemukan di database influencer.";
-                echo $this->template->alert_danger($msg);
-                die;
+                // Reverse flow: the link names the creator, so register it instead of refusing.
+                $influencerData = $this->create_influencer_from_link(strval($dt['platform'] ?? ''), $handle);
+                if (!$influencerData) {
+                    echo $this->template->alert_danger("Creator '" . htmlspecialchars($handle, ENT_QUOTES, 'UTF-8') . "' belum ada di database influencer dan gagal ditambahkan otomatis. Tambahkan lewat menu Influencer.");
+                    die;
+                }
             }
         } else {
             $influencerData = $this->mymodel->selectDataOne('influencer', ['id' => intval($dt['influencer'] ?? 0)]);
@@ -2595,6 +2606,35 @@ class Endorse extends BaseController
         }
         $dt['influencer'] = $influencerData['id'];
         $dt['nama_creator'] = $influencerData['username'];
+    }
+
+    /**
+     * Minimal influencer row for a creator first seen in an endorse link (username = handle,
+     * canonical profile URL). Metrics/ratecard stay empty until the regular sync and the team
+     * fill them; the sync crons pick it up because sync_at is NULL. Returns the row or null.
+     */
+    private function create_influencer_from_link($platform, $handle)
+    {
+        $profile = validate_social_profile_url($platform, $handle);
+        if (!$profile['ok'] || $profile['username'] === '') return null;
+        $user_id = intval($_SESSION['user']['id'] ?? 0);
+        $now = date('Y-m-d H:i:s');
+        $row = [
+            'username' => $profile['username'],
+            'full_name' => $profile['username'],
+            'type' => $platform,
+            'url' => $profile['url'],
+            'status' => 'Aktif',
+            'status_reach' => 'Belum Reachout',
+            'desc' => 'Ditambahkan otomatis dari link upload endorse.',
+            'img' => '',
+            'created_at' => $now,
+            'created_by' => $user_id,
+            'updated_at' => $now,
+            'updated_by' => $user_id,
+        ];
+        if (!$this->db->insert('influencer', $row)) return null;
+        return $this->mymodel->selectDataOne('influencer', ['id' => intval($this->db->insert_id())]) ?: null;
     }
 
     public function update()
