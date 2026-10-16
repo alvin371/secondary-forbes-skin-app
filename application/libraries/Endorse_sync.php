@@ -242,6 +242,10 @@ class Endorse_sync
             'share_save' => doubleval($response['data']['share'] ?? 0) + doubleval($response['data']['collect'] ?? 0),
             'views'      => intval($response['data']['view'] ?? 0),
         ];
+        // Instagram owner hid the like count: the 0 we got is "unknown", not a drop. Carry the
+        // last known value (stored row incl. manual edits, or yesterday's log) so it is never
+        // overwritten by 0 and the daily delta stays 0 instead of going negative.
+        $stats['likes'] = self::carry_hidden_likes($platform, $response, $stats['likes'], intval($endorse['likes'] ?? 0), intval($prev_stats['likes_after'] ?? 0));
 
         // A daily row stores the start-of-day baseline. Reuse it on every
         // subsequent refresh so an upsert represents the full daily growth,
@@ -263,6 +267,8 @@ class Endorse_sync
         if ($stats['views'] < $prev_views) {
             $stats['views'] = $prev_views;
         }
+        // Same carry for the day's baseline: today's log may predate the like being hidden.
+        $stats['likes'] = self::carry_hidden_likes($platform, $response, intval($stats['likes']), intval($prev_likes));
 
         $is_fyp = null;
         if ($stats['views'] >= 50000) {
@@ -312,6 +318,11 @@ class Endorse_sync
             $endorseUpdate['tiktok_cover'] = $normalizedCover;
             $endorseUpdate['tiktok_content_link'] = strval($response['data']['video_link'] ?? '');
             $endorseUpdate['tiktok_fetched_at'] = date('Y-m-d H:i:s');
+        }
+
+        // Which Instagram metrics are not public for this post (photo views, hidden likes).
+        if ($platform === 'Instagram' && $db->field_exists('metric_flags', 'endorse')) {
+            $endorseUpdate['metric_flags'] = strval($response['data']['metric_flags'] ?? '');
         }
 
         $db->update('endorse', $endorseUpdate, ['id' => $id_endorse]);
@@ -412,6 +423,22 @@ class Endorse_sync
         }
     }
 
+    /** True when get_social_media() reported $flag in data.metric_flags (e.g. like_hidden). */
+    public static function has_metric_flag(array $response, string $flag): bool
+    {
+        return in_array($flag, explode(',', strval($response['data']['metric_flags'] ?? '')), true);
+    }
+
+    /**
+     * Instagram sends 0 likes when the owner hid them: that is "unknown", not a drop.
+     * Returns the highest of the fetched and the last known counts; other responses pass through.
+     */
+    public static function carry_hidden_likes(string $platform, array $response, int $likes, int ...$known): int
+    {
+        if ($platform !== 'Instagram' || !self::has_metric_flag($response, 'like_hidden')) return $likes;
+        return $known ? max($likes, ...$known) : $likes;
+    }
+
     public function apply_snapshot(array $endorse, array $response, string $purpose, int $user_id): array
     {
         $platform = strval($endorse['platform']);
@@ -439,6 +466,9 @@ class Endorse_sync
             'save'    => intval($response['data']['collect'] ?? 0),
             'view'    => intval($response['data']['view'] ?? 0),
         ];
+        // Hidden Instagram likes: keep the last known count rather than snapshotting 0
+        // (a 0 final would read as negative growth against a real initial).
+        $metrics['like'] = self::carry_hidden_likes($platform, $response, $metrics['like'], intval($endorse['like_' . $purpose] ?? 0), intval($endorse['likes'] ?? 0));
 
         $update = [
             'updated_at' => $now,
@@ -490,6 +520,10 @@ class Endorse_sync
             if (!empty($response['data']['cover'])) {
                 $update['tiktok_cover'] = strval($response['data']['cover']);
             }
+        }
+
+        if ($platform === 'Instagram' && $db->field_exists('metric_flags', 'endorse')) {
+            $update['metric_flags'] = strval($response['data']['metric_flags'] ?? '');
         }
 
         $db->update('endorse', $update, ['id' => $id_endorse]);

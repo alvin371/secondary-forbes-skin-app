@@ -521,6 +521,9 @@ class Review_endorse extends CI_Controller
         $data['cpm_2'] = $this->template->separator_only($influencer['cpm_2']);
         $data['avg_interaksi_2'] = $this->template->separator_only($influencer['avg_interaksi_2']);
         $data['avg_view_2'] = $this->template->separator_only($influencer['avg_view_2']);
+        // Why some Instagram numbers are 0 (photo views / hidden likes); static text, safe to inject.
+        $data['metric_badges'] = $this->template->influencer_metric_badges($influencer ?: [])
+            . $this->template->endorse_metric_badges($endorse);
 
         // Format numeric values
         $numeric_fields = ['total_cost', 'views', 'cpm', 'likes', 'comment', 'share_save'];

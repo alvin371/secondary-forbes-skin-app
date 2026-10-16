@@ -4612,6 +4612,12 @@ class Api_v2 extends CI_Controller
         }
 
         $threshold = date('Y-m-d', strtotime('-7 days'));
+        // sync_at only moves on a successful external fetch. Failures are gated by the sync
+        // state columns (backoff, parked accounts; Template::influencer_sync_state()), so a
+        // profile edit never postpones a sync. Before that migration: once a day via updated_at.
+        $gate = $this->template->influencer_sync_state_ready()
+            ? $this->template->influencer_sync_eligible_sql(date('Y-m-d H:i:s'))
+            : "(updated_at IS NULL OR updated_at < '" . date('Y-m-d H:i:s', strtotime('-1 day')) . "')";
         $rows = $this->mymodel->selectWithQuery("
             SELECT *
             FROM influencer
@@ -4619,12 +4625,14 @@ class Api_v2 extends CI_Controller
               AND url != ''
               AND type != 'Tiktok'
               AND (DATE(sync_at) <= '$threshold' OR sync_at IS NULL)
+              AND $gate
             ORDER BY sync_at IS NULL DESC, sync_at ASC, id ASC
             LIMIT 10
         ") ?: [];
 
         $synced = 0;
         $failed = 0;
+        $skipped = 0;
         $errors = [];
         foreach ($rows as $row) {
             $id = intval($row['id']);
@@ -4645,7 +4653,6 @@ class Api_v2 extends CI_Controller
             $views = intval($aggregate['views'] ?? 0);
             $totalCost = floatval($aggregate['total_cost'] ?? 0);
             $this->db->update('influencer', [
-                'sync_at' => $now,
                 'frequency' => intval($aggregate['frequency'] ?? 0),
                 'total_cost' => $totalCost,
                 'view' => $views,
@@ -4665,14 +4672,19 @@ class Api_v2 extends CI_Controller
             } elseif ($row['type'] === 'Instagram') {
                 $profile = $this->template->get_account_id('Instagram', $row['url']);
             } else {
-                $failed++;
-                $errors[] = "ID $id: Platform {$row['type']} belum didukung untuk sync external.";
+                // No external source (Youtube/Twitter/...): the internal aggregate above is the
+                // whole sync, so it counts as done for the week instead of heading the queue forever.
+                $this->db->update('influencer', ['sync_at' => $now], ['id' => $id]);
+                $skipped++;
                 continue;
             }
 
             if (empty($profile['status'])) {
                 $failed++;
                 $errors[] = "ID $id: " . ($profile['msg'] ?? 'Gagal mengambil profil.');
+                $this->template->record_influencer_sync($row, $profile);
+                // Our API key/token is broken: every remaining row would fail the same way.
+                if (($profile['error_class'] ?? '') === 'config') break;
                 continue;
             }
 
@@ -4692,25 +4704,19 @@ class Api_v2 extends CI_Controller
             if (empty($posts['status'])) {
                 $failed++;
                 $errors[] = "ID $id: " . ($posts['msg'] ?? 'Gagal mengambil daftar post.');
+                $this->template->record_influencer_sync($row, $posts);
                 continue;
             }
 
-            $sum = ['like' => 0, 'comment' => 0, 'collect' => 0, 'share' => 0, 'view' => 0];
-            $items = array_slice($posts['data'] ?? [], 0, 10);
-            foreach ($items as $post) {
-                foreach ($sum as $key => $unused) {
-                    $sum[$key] += intval($post[$key] ?? 0);
-                }
-            }
-            $count = count($items);
-            $avgView = $count > 0 ? $sum['view'] / $count : 0;
-            $avgInteraction = $count > 0
-                ? ($sum['like'] + $sum['comment'] + $sum['collect'] + $sum['share']) / $count
-                : 0;
-            $er = $avgView > 0 ? ($avgInteraction / $avgView * 100) : 0;
+            $summary = $this->template->summarize_social_posts(is_array($posts['data'] ?? null) ? $posts['data'] : []);
+            $sum = $summary['sum'];
+            $count = $summary['count'];
+            $avgView = $summary['avg_view'];
+            $avgInteraction = $summary['avg_interaksi'];
+            $er = $summary['er'];
             $ratecard = floatval($row['ratecard'] ?? 0);
 
-            $this->db->update('influencer', [
+            $metricUpdate = [
                 'sync_at' => $now,
                 'frequency_2' => $count,
                 'view_2' => $sum['view'],
@@ -4724,7 +4730,13 @@ class Api_v2 extends CI_Controller
                 'cpm_2' => ($ratecard > 0 && $avgView > 0) ? ($ratecard / $avgView * 1000) : 0,
                 'updated_at' => $now,
                 'updated_by' => '1',
-            ], ['id' => $id]);
+            ];
+            if ($this->db->field_exists('ig_photo_posts', 'influencer')) {
+                $metricUpdate['ig_photo_posts'] = $summary['photo_posts'];
+                $metricUpdate['ig_hidden_like_posts'] = $summary['hidden_like_posts'];
+            }
+            $this->db->update('influencer', $metricUpdate, ['id' => $id]);
+            $this->template->record_influencer_sync($row, $posts);
 
             $today = date('Y-m-d');
             $existing = $this->mymodel->selectWithQuery("
@@ -4756,8 +4768,9 @@ class Api_v2 extends CI_Controller
             'processed' => count($rows),
             'synced' => $synced,
             'failed' => $failed,
+            'skipped' => $skipped,
             'errors' => $errors,
-            'msg' => "$synced influencer disinkronkan, $failed gagal.",
+            'msg' => "$synced influencer disinkronkan, $failed gagal, $skipped tanpa sumber eksternal.",
         ]);
         die;
     }

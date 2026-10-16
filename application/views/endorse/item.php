@@ -303,12 +303,19 @@ if ($view == 'table') {
                         $bg_payment = '#A5BFCC';
                     }
 
+                    // Stats are editable while nothing was fetched, or for Instagram photos whose
+                    // view count is never public (metric_flags photo_no_view) so it can be entered from Insights.
                     $can_edit_stats = !empty($v['link_upload'])
-                        && (int) $v['views'] === 0
-                        && (float) $v['cpm'] == 0.0
-                        && (int) $v['likes'] === 0
-                        && (int) $v['comment'] === 0
-                        && (int) $v['share_save'] === 0;
+                        && ((
+                            (int) $v['views'] === 0
+                            && (float) $v['cpm'] == 0.0
+                            && (int) $v['likes'] === 0
+                            && (int) $v['comment'] === 0
+                            && (int) $v['share_save'] === 0
+                        ) || (
+                            ($v['platform'] ?? '') === 'Instagram'
+                            && in_array('photo_no_view', explode(',', strval($v['metric_flags'] ?? '')), true)
+                        ));
                 ?>
                 <tr id="endorse-row-<?= $v['id'] ?>" data-endorse-id="<?= $v['id'] ?>">
                     <!-- <td><?= $k + 1 ?></td> -->
@@ -388,7 +395,7 @@ if ($view == 'table') {
                         </div>
                     </td>
                     <td><?= $v['posting_at'] ? $v['posting_at'] : '-' ?></td>
-                    <td><?= separator_only($v['views']) ?></td>
+                    <td><?= separator_only($v['views']) ?><?php if ($metric_badges = $this->template->endorse_metric_badges($v)): ?><div class="mt-1"><?= $metric_badges ?></div><?php endif; ?></td>
                     <td><?= separator_only($v['cpm']) ?></td>
                     <td class="text-start"><?= separator_only($v['engagement']) ?></td>
                     <td>
@@ -636,12 +643,19 @@ if ($view == 'table') {
         }
 
         $current_url = $_SERVER['REQUEST_URI'];
+        // Stats are editable while nothing was fetched, or for Instagram photos whose
+        // view count is never public (metric_flags photo_no_view) so it can be entered from Insights.
         $can_edit_stats = !empty($v['link_upload'])
-            && (int) $v['views'] === 0
-            && (float) $v['cpm'] == 0.0
-            && (int) $v['likes'] === 0
-            && (int) $v['comment'] === 0
-            && (int) $v['share_save'] === 0;
+            && ((
+                (int) $v['views'] === 0
+                && (float) $v['cpm'] == 0.0
+                && (int) $v['likes'] === 0
+                && (int) $v['comment'] === 0
+                && (int) $v['share_save'] === 0
+            ) || (
+                ($v['platform'] ?? '') === 'Instagram'
+                && in_array('photo_no_view', explode(',', strval($v['metric_flags'] ?? '')), true)
+            ));
 
         if (strpos($current_url, 'endorse/item-endorse') !== false) {
             $display_k = $k + 1;
@@ -715,6 +729,11 @@ if ($view == 'table') {
                 <p class="mb-1 text-black fw-600">CPM : <?= separator_only($creator['cpm_2']) ?></p>
                 <p class="mb-1 text-black">AVG Interaksi : <?= separator_only($creator['avg_interaksi_2']) ?></p>
                 <p class="mb-1 text-black">AVG View : <?= separator_only($creator['avg_view_2']) ?></p>
+                <?= $this->template->influencer_metric_badges([
+                    'frequency_2' => $v['creator_frequency_2'] ?? 0,
+                    'ig_photo_posts' => $v['creator_ig_photo_posts'] ?? 0,
+                    'ig_hidden_like_posts' => $v['creator_ig_hidden_like_posts'] ?? 0,
+                ]) ?>
             </div>
             <!-- Action Buttons Section -->
             <div class="<?= !empty($v['media_attachment']) ? 'col-lg-3' : 'col-lg-4' ?> text-lg-end text-start">
@@ -766,6 +785,7 @@ if ($view == 'table') {
                         <p class="mb-1">Ads : <?= $v['kode_ads'] ?></p>
                     </div>
                     <div class="col-md-4">
+                        <?= $this->template->endorse_metric_badges($v) ?>
                         <?php if ($analytics_v2_cards_enabled): ?>
                         <section class="endorse-v2-metric" data-endorse-metric="<?= $v['id'] ?>" aria-live="polite">
                             <span class="text-muted small"><i class="fa fa-circle-o-notch fa-spin"></i> Memuat data sinkronisasi…</span>

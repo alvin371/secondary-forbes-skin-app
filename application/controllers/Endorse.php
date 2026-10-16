@@ -1204,6 +1204,10 @@ class Endorse extends BaseController
         $data['page'] = ceil($total_data / $limit);
         $data['current_page'] = $current_page;
 
+        // Instagram metric-flag columns arrive with migration 20261011000000.
+        $creator_flag_cols = $this->db->field_exists('ig_photo_posts', 'influencer')
+            ? ", c.frequency_2 AS creator_frequency_2, c.ig_photo_posts AS creator_ig_photo_posts, c.ig_hidden_like_posts AS creator_ig_hidden_like_posts"
+            : "";
         $query = $this->mymodel->selectWithQuery("
             SELECT
                 e.*,
@@ -1216,6 +1220,7 @@ class Endorse extends BaseController
                 c.cpm_2 AS creator_cpm_2,
                 c.avg_interaksi_2 AS creator_avg_interaksi_2,
                 c.avg_view_2 AS creator_avg_view_2
+                $creator_flag_cols
             FROM
                 (SELECT * FROM endorse WHERE id_campaign = '$id_campaign' $qry) AS e
             LEFT JOIN influencer AS i ON e.nama_creator = i.username

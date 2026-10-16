@@ -244,6 +244,8 @@ if ($view == 'table') {
                     <td>
                         <p class="mb-1 text-black">Avg Views : <?= $this->template->separator_only($v['avg_view_2']) ?></p>
                         <p class="mb-1 text-black">CPM : <?= $this->template->separator_only($v['cpm_2']) ?></p>
+                        <?= $this->template->influencer_metric_badges($v) ?>
+                        <?= $this->template->influencer_sync_badge($v) ?>
                     </td>
                     <td><?= $this->template->separator_only($v['ratecard']) ?></td>
                     <td>
@@ -469,6 +471,8 @@ if ($view == 'table') {
                             <!-- <p class="mb-1 text-black">Comments : <?= $template->separator_only($v['comment_2']) ?></p> -->
                             <p class="mb-1 text-black">AVG Interaksi : <?= $template->separator_only($v['avg_interaksi_2']) ?></p>
                             <p class="mb-1 text-black">AVG View : <?= $template->separator_only($v['avg_view_2']) ?></p>
+                            <?= $template->influencer_metric_badges($v) ?>
+                            <?= $template->influencer_sync_badge($v) ?>
                             <!-- <p class="mb-1 text-black">Frequency : <?= $template->separator_only($v['frequency_2']) ?></p> -->
                             <!-- <p class="mb-1 text-black">Save & Share : <?= $template->separator_only($v['collect_2'] + $v['share_2']) ?></p> -->
                         </div>

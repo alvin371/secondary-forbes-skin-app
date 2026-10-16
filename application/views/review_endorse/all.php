@@ -942,6 +942,7 @@
                                             <p class="mb-1 text-black fw-600">CPM : ${data.cpm_2}</p>
                                             <p class="mb-1 text-black">AVG Interaksi : ${data.avg_interaksi_2}</p>
                                             <p class="mb-1 text-black">AVG View : ${data.avg_view_2}</p>
+                                            ${data.metric_badges || ''}
                                         </div>
                                         <div class="col-lg-4 text-lg-end text-start">
                                             <a href="#!" onclick="remove('${data.id}')" class="btn btn-delete  mt-0 mb-2"><i class="bi bi-trash fs-16"></i> Delete Data</a>

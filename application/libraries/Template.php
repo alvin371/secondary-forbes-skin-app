@@ -2158,56 +2158,88 @@ class Template
         ];
     }
 
-    protected function bhskin_instagram_headers()
+    /**
+     * GET an instagram-looter2 endpoint. Returns null when the RapidAPI key is not configured.
+     */
+    protected function bhskin_instagram_get($path, array $query)
     {
+        $key = trim((string) env('INSTAGRAM_RAPIDAPI_KEY', ''));
+        if ($key === '') return null;
         $host = env('INSTAGRAM_RAPIDAPI_HOST', 'instagram-looter2.p.rapidapi.com');
-        return [
+        return $this->bhskin_social_json('https://' . $host . $path . '?' . http_build_query($query), [
             'Content-Type: application/json',
             'x-rapidapi-host: ' . $host,
-            'x-rapidapi-key: ' . env('INSTAGRAM_RAPIDAPI_KEY', ''),
-        ];
+            'x-rapidapi-key: ' . $key,
+        ]);
+    }
+
+    protected function bhskin_instagram_config_failure()
+    {
+        return ['status' => false, 'msg' => 'Konfigurasi Instagram RapidAPI belum lengkap', 'data' => [], 'error_class' => 'config'];
     }
 
     function get_instagram_account($url)
     {
-        if (trim((string) env('INSTAGRAM_RAPIDAPI_KEY', '')) === '') {
-            return ['status' => false, 'msg' => 'Konfigurasi Instagram RapidAPI belum lengkap', 'data' => [], 'error_class' => 'config'];
-        }
         $path = trim((string) parse_url($url, PHP_URL_PATH), '/');
         $username = ltrim(explode('/', $path)[0] ?? '', '@');
-        if ($username === '') return ['status' => false, 'msg' => 'Pastikan URL Instagram sudah diisi!', 'data' => [], 'error_class' => 'permanent'];
-        $host = env('INSTAGRAM_RAPIDAPI_HOST', 'instagram-looter2.p.rapidapi.com');
-        $payload = $this->bhskin_social_json('https://' . $host . '/profile2?username=' . urlencode($username), $this->bhskin_instagram_headers());
-        $user = $payload['data']['user'] ?? ($payload['user'] ?? ($payload['data'] ?? []));
-        if (empty($user) || (!empty($payload['error']) && empty($user['id']))) {
-            return $this->social_api_failure($payload, $payload['message'] ?? 'Profil Instagram tidak ditemukan', 'permanent');
+        if ($username === '') return ['status' => false, 'msg' => 'Pastikan URL Instagram sudah diisi!', 'data' => [], 'error_class' => 'permanent', 'account_state' => 'invalid_url'];
+        // /profile (V1) returns the user at top level; /profile2 sends media_count as null.
+        // `fields` trims the response to what we store. Failure: {"status":false,"errorMessage":".."}.
+        $user = $this->bhskin_instagram_get('/profile', [
+            'username' => $username,
+            'fields' => 'id,username,is_private,edge_followed_by,profile_pic_url_hd,edge_owner_to_timeline_media.count',
+        ]);
+        if ($user === null) return $this->bhskin_instagram_config_failure();
+        if (empty($user['id'])) {
+            $msg = strval($user['errorMessage'] ?? '') ?: 'Profil Instagram tidak ditemukan';
+            // Only the provider's explicit answer ("This account does not exist.", checked live
+            // 2026-10-16) marks the account gone; any other failure stays retryable.
+            $gone = ($user['status'] ?? null) === false && preg_match('/does not exist|not found|isn.t available/i', $msg);
+            $failure = $this->social_api_failure($user, $msg, $gone ? 'permanent' : 'transient');
+            if ($gone && $failure['error_class'] === 'permanent') $failure['account_state'] = 'not_found';
+            return $failure;
+        }
+        if (!empty($user['is_private'])) {
+            return ['status' => false, 'msg' => 'Akun Instagram private: post dan statistiknya tidak bisa diambil.', 'data' => [], 'error_class' => 'permanent', 'account_state' => 'private'];
         }
         return ['status' => true, 'msg' => 'Data ditemukan', 'data' => [
             'username' => strval($user['username'] ?? $username),
-            'account_id' => strval($user['id'] ?? $user['pk'] ?? ''),
-            'follower' => intval($user['follower_count'] ?? $user['followers'] ?? 0),
-            'media_count' => intval($user['media_count'] ?? $user['edge_owner_to_timeline_media']['count'] ?? 0),
-            'img' => strval($user['profile_pic_url_hd'] ?? $user['profile_pic_url'] ?? ''),
+            'account_id' => strval($user['id']),
+            'follower' => intval($user['edge_followed_by']['count'] ?? 0),
+            // ponytail: /profile reports 0 for some public accounts (e.g. putootiwi) while
+            // /user-feeds2 has the real count; media_count is stored but never read, so not worth a 2nd call.
+            'media_count' => intval($user['edge_owner_to_timeline_media']['count'] ?? 0),
+            'img' => strval($user['profile_pic_url_hd'] ?? ''),
             'source' => 'instagram_looter2',
         ]];
     }
 
     function get_instagram_post_list($account_id)
     {
-        if (trim((string) env('INSTAGRAM_RAPIDAPI_KEY', '')) === '') return ['status' => false, 'msg' => 'Konfigurasi Instagram RapidAPI belum lengkap', 'data' => [], 'error_class' => 'config'];
         if (trim((string) $account_id) === '') return ['status' => false, 'msg' => 'Pastikan account id sudah diisi!', 'data' => [], 'error_class' => 'permanent'];
-        $host = env('INSTAGRAM_RAPIDAPI_HOST', 'instagram-looter2.p.rapidapi.com');
-        $payload = $this->bhskin_social_json('https://' . $host . '/user-feeds2?id=' . urlencode($account_id) . '&count=10', $this->bhskin_instagram_headers());
-        $items = $payload['data']['items'] ?? ($payload['items'] ?? ($payload['data'] ?? []));
-        if (empty($items) || !is_array($items)) return $this->social_api_failure($payload, $payload['message'] ?? 'Post Instagram tidak ditemukan', 'empty');
+        // GraphQL shape: data.user.edge_owner_to_timeline_media.edges[].node; `fields` cuts ~200KB to ~3KB.
+        $node = 'data.user.edge_owner_to_timeline_media.edges[].node.';
+        $payload = $this->bhskin_instagram_get('/user-feeds2', [
+            'id' => $account_id,
+            'count' => 10,
+            'fields' => implode(',', array_map(function ($f) use ($node) { return $node . $f; },
+                ['is_video', 'video_view_count', 'like_and_view_counts_disabled', 'edge_media_preview_like.count', 'edge_media_to_comment.count'])),
+        ]);
+        if ($payload === null) return $this->bhskin_instagram_config_failure();
+        $edges = $payload['data']['user']['edge_owner_to_timeline_media']['edges'] ?? [];
+        if (empty($edges) || !is_array($edges)) return $this->social_api_failure($payload, $payload['errorMessage'] ?? 'Post Instagram tidak ditemukan', 'empty');
         $out = [];
-        foreach (array_slice($items, 0, 10) as $item) {
+        foreach (array_slice($edges, 0, 10) as $edge) {
+            $item = $edge['node'] ?? [];
+            $flags = $this->bhskin_instagram_metric_flags($item);
             $out[] = [
-                'like' => intval($item['like_count'] ?? $item['likes'] ?? 0),
-                'comment' => intval($item['comment_count'] ?? $item['comments'] ?? 0),
-                'share' => intval($item['share_count'] ?? 0),
-                'collect' => intval($item['save_count'] ?? 0),
-                'view' => intval($item['play_count'] ?? $item['view_count'] ?? $item['video_view_count'] ?? 0),
+                'like' => in_array('like_hidden', $flags, true) ? 0 : intval($item['edge_media_preview_like']['count'] ?? 0),
+                'comment' => max(0, intval($item['edge_media_to_comment']['count'] ?? 0)),
+                'share' => 0, // not public on Instagram
+                'collect' => 0, // saves are not public on Instagram
+                'view' => intval($item['video_view_count'] ?? 0),
+                'is_photo' => in_array('photo_no_view', $flags, true),
+                'like_hidden' => in_array('like_hidden', $flags, true),
             ];
         }
         return ['status' => true, 'msg' => 'Data ditemukan', 'data' => $out];
@@ -2215,21 +2247,310 @@ class Template
 
     function get_instagram_social_media($url)
     {
-        if (trim((string) env('INSTAGRAM_RAPIDAPI_KEY', '')) === '') return ['status' => false, 'msg' => 'Konfigurasi Instagram RapidAPI belum lengkap', 'data' => [], 'error_class' => 'config'];
         if (trim((string) $url) === '') return ['status' => false, 'msg' => 'URL tidak ditemukan', 'data' => [], 'error_class' => 'permanent'];
-        $host = env('INSTAGRAM_RAPIDAPI_HOST', 'instagram-looter2.p.rapidapi.com');
-        $payload = $this->bhskin_social_json('https://' . $host . '/post?url=' . urlencode($url), $this->bhskin_instagram_headers());
-        $item = $payload['data']['item'] ?? ($payload['item'] ?? ($payload['data'] ?? []));
-        if (empty($item) || !is_array($item)) return $this->social_api_failure($payload, $payload['message'] ?? 'Post Instagram tidak ditemukan', 'permanent');
+        // /post returns the media at top level; failure: {"status":false,"errorMessage":".."}.
+        $item = $this->bhskin_instagram_get('/post', [
+            'url' => $url,
+            'fields' => 'status,id,errorMessage,is_video,like_and_view_counts_disabled,video_play_count,video_view_count,edge_media_preview_like.count,edge_media_preview_comment.count,taken_at_timestamp',
+        ]);
+        if ($item === null) return $this->bhskin_instagram_config_failure();
+        if (empty($item['status']) || empty($item['id'])) return $this->social_api_failure($item, $item['errorMessage'] ?? 'Post Instagram tidak ditemukan', 'permanent');
+        $flags = $this->bhskin_instagram_metric_flags($item);
         return ['status' => true, 'msg' => 'Data ditemukan', 'data' => [
-            'content_id' => strval($item['id'] ?? $item['pk'] ?? $item['shortcode'] ?? ''),
-            'like' => intval($item['like_count'] ?? $item['likes'] ?? 0),
-            'comment' => intval($item['comment_count'] ?? $item['comments'] ?? 0),
-            'share' => intval($item['share_count'] ?? 0),
-            'collect' => intval($item['save_count'] ?? 0),
-            'view' => intval($item['play_count'] ?? $item['view_count'] ?? $item['video_view_count'] ?? 0),
-            'created_at' => !empty($item['taken_at']) ? date('Y-m-d', intval($item['taken_at'])) : '',
+            'content_id' => strval($item['id']),
+            'like' => in_array('like_hidden', $flags, true) ? 0 : intval($item['edge_media_preview_like']['count'] ?? 0),
+            'comment' => max(0, intval($item['edge_media_preview_comment']['count'] ?? 0)),
+            'share' => 0, // not public on Instagram
+            'collect' => 0, // saves are not public on Instagram
+            // Reels: play count is what Instagram shows; photos have no public view count.
+            'view' => intval($item['video_play_count'] ?? $item['video_view_count'] ?? 0),
+            'created_at' => !empty($item['taken_at_timestamp']) ? date('Y-m-d', intval($item['taken_at_timestamp'])) : '',
+            'metric_flags' => implode(',', $flags),
         ]];
+    }
+
+    /**
+     * Badges for one endorse post whose Instagram metrics are not public (endorse.metric_flags).
+     */
+    function endorse_metric_badges(array $endorse)
+    {
+        $flags = array_filter(explode(',', strval($endorse['metric_flags'] ?? '')));
+        $html = '';
+        if (in_array('photo_no_view', $flags, true)) {
+            $html .= intval($endorse['views'] ?? 0) > 0
+                ? $this->metric_badge('bi-pencil-square', 'View diisi manual', '#E7F1FF', '#084298',
+                    'Post foto: Instagram tidak membuka jumlah view foto ke publik, angka view ini diisi manual (dari Insights pemilik akun).')
+                : $this->metric_badge('bi-image', 'View foto tidak publik', '#FFF3CD', '#664D03',
+                    'Post foto/carousel: Instagram tidak membuka jumlah view foto ke publik, hanya pemilik akun yang bisa melihatnya di Insights. View bernilai 0 bukan berarti tidak ada yang melihat. Isi manual lewat tombol edit statistik.');
+        }
+        if (in_array('like_hidden', $flags, true)) {
+            $html .= $this->metric_badge('bi-eye-slash', 'Like disembunyikan', '#E2E3E5', '#41464B',
+                'Pemilik akun menyembunyikan jumlah like di post ini, sehingga like tidak bisa diambil. Angka like yang tampil adalah nilai terakhir yang sempat tersimpan (0 jika belum pernah ada).');
+        }
+        return $html;
+    }
+
+    /**
+     * Badges for an influencer's sampled posts (influencer.ig_photo_posts / ig_hidden_like_posts).
+     */
+    function influencer_metric_badges(array $influencer)
+    {
+        $sample = intval($influencer['frequency_2'] ?? 0);
+        $photos = intval($influencer['ig_photo_posts'] ?? 0);
+        $hidden = intval($influencer['ig_hidden_like_posts'] ?? 0);
+        $html = '';
+        if ($photos > 0) {
+            $videos = max(0, $sample - $photos);
+            $html .= $this->metric_badge('bi-image', $photos . '/' . $sample . ' post foto', '#FFF3CD', '#664D03',
+                'Instagram tidak membuka jumlah view foto ke publik. Avg View, CPM dan ER eksternal hanya dihitung dari '
+                . $videos . ' post video/reels' . ($videos === 0 ? ', sehingga belum bisa dihitung.' : '.'));
+        }
+        if ($hidden > 0) {
+            $html .= $this->metric_badge('bi-eye-slash', $hidden . ' post like disembunyikan', '#E2E3E5', '#41464B',
+                'Pemilik akun menyembunyikan jumlah like di ' . $hidden . ' dari ' . $sample . ' post terakhir. Post tersebut tidak dihitung dalam AVG Interaksi dan ER eksternal'
+                . ($hidden >= $sample || (isset($influencer['er']) && floatval($influencer['er']) <= 0) ? ', sehingga ER belum bisa dihitung.' : '.'));
+        }
+        return $html;
+    }
+
+    protected function metric_badge($icon, $label, $bg, $color, $reason)
+    {
+        $reason = htmlspecialchars($reason, ENT_QUOTES, 'UTF-8');
+        return '<span class="badge rounded-pill me-1 mb-1" style="background:' . $bg . ';color:' . $color . ';font-weight:600;cursor:help;white-space:normal;text-align:left"'
+            . ' title="' . $reason . '"><i class="bi ' . $icon . ' me-1" aria-hidden="true"></i>'
+            . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '<span class="visually-hidden">: ' . $reason . '</span></span>';
+    }
+
+    /**
+     * Roll the sampled posts (get_post_list / get_threads_post_list) into the *_2 metrics.
+     * Instagram leaves some numbers unknown, so each average only uses posts that have it:
+     * - avg_view: posts with a view count (photos have none: is_photo).
+     * - avg_interaksi: posts whose likes are visible (like_hidden counts 0 likes, not real).
+     * - er: posts with both, so a mostly-photo or hidden-like feed does not skew it.
+     * Posts without flags (TikTok/Threads) count everywhere, as before.
+     */
+    function summarize_social_posts(array $posts)
+    {
+        $posts = array_slice($posts, 0, 10);
+        $sum = ['like' => 0, 'comment' => 0, 'collect' => 0, 'share' => 0, 'view' => 0];
+        $view = ['n' => 0, 'total' => 0];
+        $interaction = ['n' => 0, 'total' => 0];
+        $er = ['view' => 0, 'interaction' => 0];
+        $photoPosts = 0;
+        $hiddenLikePosts = 0;
+        foreach ($posts as $post) {
+            foreach ($sum as $key => $unused) {
+                $sum[$key] += intval($post[$key] ?? 0);
+            }
+            $isPhoto = !empty($post['is_photo']);
+            $likeHidden = !empty($post['like_hidden']);
+            $postInteraction = intval($post['like'] ?? 0) + intval($post['comment'] ?? 0) + intval($post['collect'] ?? 0) + intval($post['share'] ?? 0);
+            $photoPosts += $isPhoto ? 1 : 0;
+            $hiddenLikePosts += $likeHidden ? 1 : 0;
+            if (!$isPhoto) {
+                $view['n']++;
+                $view['total'] += intval($post['view'] ?? 0);
+            }
+            if (!$likeHidden) {
+                $interaction['n']++;
+                $interaction['total'] += $postInteraction;
+            }
+            if (!$isPhoto && !$likeHidden) {
+                $er['view'] += intval($post['view'] ?? 0);
+                $er['interaction'] += $postInteraction;
+            }
+        }
+        return [
+            'sum' => $sum,
+            'count' => count($posts),
+            'avg_view' => $view['n'] > 0 ? $view['total'] / $view['n'] : 0,
+            'avg_interaksi' => $interaction['n'] > 0 ? $interaction['total'] / $interaction['n'] : 0,
+            'er' => $er['view'] > 0 ? ($er['interaction'] / $er['view'] * 100) : 0,
+            'photo_posts' => $photoPosts,
+            'hidden_like_posts' => $hiddenLikePosts,
+        ];
+    }
+
+    /**
+     * validate_social_profile_url() plus the network step it asks for: follow a share
+     * link's redirect, or ask the platform who owns a post link. At most two steps
+     * (vt.tiktok.com/.. -> tiktok.com/@/photo/ID -> owner).
+     */
+    function normalize_influencer_profile_url($type, $url)
+    {
+        if (!function_exists('validate_social_profile_url')) {
+            $CI =& get_instance();
+            $CI->load->helper('social_platform');
+        }
+        $check = validate_social_profile_url($type, $url);
+        for ($step = 0; $step < 2 && !$check['ok'] && $check['next'] !== ''; $step++) {
+            $found = $check['next'] === 'resolve'
+                ? $this->resolve_social_redirect($check['url'])
+                : $this->lookup_social_post_owner($type, $check['url']);
+            if ($found === '') return $check; // its msg already says what to paste instead
+            $check = validate_social_profile_url($type, $found);
+        }
+        return $check;
+    }
+
+    /**
+     * Follow a share link's redirects (HEAD, no body) without leaving the platform domains,
+     * so a pasted link cannot make the server fetch an arbitrary host.
+     * Returns the final URL, or '' when the link did not redirect within those domains.
+     */
+    protected function resolve_social_redirect($url)
+    {
+        $current = preg_match('#^https?://#i', $url) ? $url : 'https://' . $url;
+        $moved = false;
+        for ($hop = 0; $hop < 5 && detect_platform_from_url($current) !== ''; $hop++) {
+            $curl = curl_init($current);
+            curl_setopt_array($curl, [
+                CURLOPT_NOBODY => true,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT => 8,
+                CURLOPT_USERAGENT => 'Mozilla/5.0',
+            ]);
+            curl_exec($curl);
+            $code = intval(curl_getinfo($curl, CURLINFO_HTTP_CODE));
+            $next = strval(curl_getinfo($curl, CURLINFO_REDIRECT_URL));
+            curl_close($curl);
+            if ($code < 300 || $code >= 400 || $next === '') break;
+            $current = $next;
+            $moved = true;
+        }
+        return ($moved && detect_platform_from_url($current) !== '') ? $current : '';
+    }
+
+    /** Username of the account that posted $url, or '' when the platform does not say. */
+    protected function lookup_social_post_owner($type, $url)
+    {
+        if ($type === 'Instagram') {
+            // /post `owner.username` checked live 2026-10-16.
+            $post = $this->bhskin_instagram_get('/post', ['url' => $url, 'fields' => 'status,owner.username']);
+            return strval($post['owner']['username'] ?? '');
+        }
+        if ($type === 'Tiktok') {
+            // Same getVideoInfo call get_social_media() makes; author.unique_id when the provider sends it.
+            $resp = $this->executeRapidApiGet($this->buildTiktokDetailUrl($url, 0), $this->getRapidApiHeaders(), 15);
+            return strval($resp['data']['author']['unique_id'] ?? '');
+        }
+        return '';
+    }
+
+    /** Influencer sync states that stop automatic fetching until the URL or type changes. */
+    const INFLUENCER_SYNC_PARKED = ['not_found', 'private', 'invalid_url', 'failed'];
+    /** Consecutive failed attempts before an Instagram account is parked as 'failed'. */
+    const INFLUENCER_SYNC_MAX_FAILS = 7;
+
+    /** True once migration 20261016000000 added influencer.sync_status & co. */
+    function influencer_sync_state_ready()
+    {
+        static $ready = null;
+        if ($ready === null) {
+            $CI =& get_instance();
+            $ready = (bool) $CI->db->field_exists('sync_status', 'influencer');
+        }
+        return $ready;
+    }
+
+    /** SQL condition: rows the automatic influencer sync may fetch at $now (Y-m-d H:i:s). */
+    function influencer_sync_eligible_sql($now)
+    {
+        $parked = "'" . implode("','", self::INFLUENCER_SYNC_PARKED) . "'";
+        return "(sync_status IS NULL OR sync_status NOT IN ($parked)) AND (sync_next_at IS NULL OR sync_next_at <= '$now')";
+    }
+
+    function influencer_sync_parked(array $influencer)
+    {
+        return in_array(strval($influencer['sync_status'] ?? ''), self::INFLUENCER_SYNC_PARKED, true);
+    }
+
+    /** Columns that put an influencer back into the automatic sync (new URL/type = new account). */
+    function influencer_sync_reset()
+    {
+        return $this->influencer_sync_state_ready()
+            ? ['sync_status' => null, 'sync_error' => null, 'sync_fail_count' => 0, 'sync_next_at' => null]
+            : [];
+    }
+
+    /**
+     * Columns to store after one external sync attempt (pure, so the policy is testable):
+     * - success: clear the failure state.
+     * - Instagram said the account does not exist / is private, or the URL names no account: park now.
+     * - any other failure: retry after 1h, 2h, 4h, 8h, 16h, then every 24h; Instagram is parked as
+     *   'failed' at INFLUENCER_SYNC_MAX_FAILS consecutive failures (~2.5 days failing nonstop).
+     * - 'config' (our API key/token) is not the account's fault: nothing is recorded (null).
+     * Only Instagram parks ($canPark): an empty Threads feed or expired token is not a dead account.
+     */
+    static function influencer_sync_state(array $result, $prevFails, $canPark, $now)
+    {
+        $at = date('Y-m-d H:i:s', $now);
+        if (!empty($result['status'])) {
+            return ['sync_status' => 'ok', 'sync_error' => null, 'sync_fail_count' => 0, 'sync_attempt_at' => $at, 'sync_next_at' => null];
+        }
+        if (strval($result['error_class'] ?? '') === 'config') return null;
+        $msg = strval($result['msg'] ?? '');
+        $state = [
+            'sync_error' => function_exists('mb_substr') ? mb_substr($msg, 0, 255) : substr($msg, 0, 255),
+            'sync_fail_count' => intval($prevFails) + 1,
+            'sync_attempt_at' => $at,
+            'sync_next_at' => null,
+        ];
+        $account = strval($result['account_state'] ?? '');
+        if ($canPark && in_array($account, ['not_found', 'private', 'invalid_url'], true)) {
+            return ['sync_status' => $account] + $state;
+        }
+        if ($canPark && $state['sync_fail_count'] >= self::INFLUENCER_SYNC_MAX_FAILS) {
+            return ['sync_status' => 'failed'] + $state;
+        }
+        $hours = min(24, 2 ** min($state['sync_fail_count'] - 1, 5));
+        $state['sync_next_at'] = date('Y-m-d H:i:s', $now + $hours * 3600);
+        return ['sync_status' => 'retrying'] + $state;
+    }
+
+    /** Store influencer_sync_state() for one row (the row as read before this attempt). */
+    function record_influencer_sync(array $influencer, array $result)
+    {
+        if (!$this->influencer_sync_state_ready()) return;
+        $state = self::influencer_sync_state($result, intval($influencer['sync_fail_count'] ?? 0), ($influencer['type'] ?? '') === 'Instagram', time());
+        if ($state === null) return;
+        $CI =& get_instance();
+        $CI->db->update('influencer', $state, ['id' => intval($influencer['id'])]);
+    }
+
+    /** Badge explaining why an influencer is not (or not yet again) synced automatically. */
+    function influencer_sync_badge(array $influencer)
+    {
+        $labels = [
+            'not_found' => ['bi-person-x', 'Akun tidak ditemukan'],
+            'private' => ['bi-lock', 'Akun private'],
+            'invalid_url' => ['bi-link-45deg', 'URL profil tidak valid'],
+            'failed' => ['bi-exclamation-octagon', 'Sync gagal berulang'],
+            'retrying' => ['bi-arrow-repeat', 'Sync gagal, dicoba lagi'],
+        ];
+        $status = strval($influencer['sync_status'] ?? '');
+        if (!isset($labels[$status])) return '';
+        $error = trim(strval($influencer['sync_error'] ?? ''));
+        $reason = $this->influencer_sync_parked($influencer)
+            ? 'Sync otomatis dihentikan.' . ($error !== '' ? ' Penyebab: ' . $error : '') . ' Perbaiki URL/Type di form edit untuk mengaktifkan sync lagi.'
+            : 'Dicoba lagi setelah ' . strval($influencer['sync_next_at'] ?? '-') . '.' . ($error !== '' ? ' Penyebab: ' . $error : '');
+        return $this->metric_badge($labels[$status][0], $labels[$status][1], '#F8D7DA', '#842029', $reason);
+    }
+
+    /**
+     * Metrics Instagram does not expose publicly for this media:
+     * - photo_no_view: photos/carousels have no public view count (only the owner's Insights).
+     * - like_hidden: the owner hid the like count; the API then sends -1 or a meaningless number.
+     */
+    protected function bhskin_instagram_metric_flags(array $item)
+    {
+        $flags = [];
+        if (empty($item['is_video'])) $flags[] = 'photo_no_view';
+        if (!empty($item['like_and_view_counts_disabled']) || intval($item['edge_media_preview_like']['count'] ?? 0) < 0) $flags[] = 'like_hidden';
+        return $flags;
     }
 
     protected function bhskin_threads_influencer($influencerId)
