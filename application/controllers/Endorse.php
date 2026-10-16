@@ -2564,6 +2564,39 @@ class Endorse extends BaseController
             ]));
     }
 
+    /**
+     * Set influencer/nama_creator from the posted link_upload. Every platform's post link is
+     * read (TikTok @user/video, vt./vm. share links, Instagram /p|reel/ via the post owner,
+     * Threads, X); links that do not name a creator (YouTube...) keep the creator picked in
+     * the form. Profile links are rejected: their stats can never be synced. Dies with an alert.
+     */
+    private function apply_link_upload_creator(array &$dt)
+    {
+        $link = $this->template->endorse_link_owner(strval($dt['platform'] ?? ''), strval($dt['link_upload']));
+        if (!$link['ok']) {
+            echo $this->template->alert_danger(htmlspecialchars($link['msg'], ENT_QUOTES, 'UTF-8'));
+            die;
+        }
+        $dt['link_upload'] = $link['url'];
+
+        if ($link['username'] !== '') {
+            $influencerData = $this->mymodel->selectDataOne('influencer', ['username' => $link['username']]);
+            if (!$influencerData) {
+                $msg = "Username '" . htmlspecialchars($link['username'], ENT_QUOTES, 'UTF-8') . "' tidak ditemukan di database influencer.";
+                echo $this->template->alert_danger($msg);
+                die;
+            }
+        } else {
+            $influencerData = $this->mymodel->selectDataOne('influencer', ['id' => intval($dt['influencer'] ?? 0)]);
+            if (!$influencerData) {
+                echo $this->template->alert_danger('Link upload tidak memuat username creator. Pilih Nama Creator terlebih dahulu.');
+                die;
+            }
+        }
+        $dt['influencer'] = $influencerData['id'];
+        $dt['nama_creator'] = $influencerData['username'];
+    }
+
     public function update()
     {
         $user = $_SESSION['user'];
@@ -2584,23 +2617,7 @@ class Endorse extends BaseController
         if ($dt['link_upload']) {
             $dt['status_endorse'] = 'Posted Content';
 
-            if (preg_match('#tiktok\.com/@([^/]+)/#', $dt['link_upload'], $match)) {
-                $usernameFromUrl = $match[1];
-
-                $influencerData = $this->mymodel->selectDataOne('influencer', ['username' => $usernameFromUrl]);
-                if ($influencerData) {
-                    $dt['influencer'] = $influencerData['id'];
-                    $dt['nama_creator'] = $influencerData['username'];
-                } else {
-                    $msg = "Username '$usernameFromUrl' tidak ditemukan di database influencer.";
-                    echo $this->template->alert_danger($msg);
-                    die;
-                }
-            } else {
-                $msg = "Link upload tidak valid atau tidak dapat mengambil username.";
-                echo $this->template->alert_danger($msg);
-                die;
-            }
+            $this->apply_link_upload_creator($dt);
         } else {
             $id_data = $dt['influencer'];
             $detail = $this->mymodel->selectWithQuery("SELECT * FROM influencer WHERE id = '$id_data'");
@@ -3012,23 +3029,7 @@ class Endorse extends BaseController
         if ($dt['link_upload']) {
             $dt['status_endorse'] = 'Posted Content';
 
-            if (preg_match('#tiktok\.com/@([^/]+)/#', $dt['link_upload'], $match)) {
-                $usernameFromUrl = $match[1];
-
-                $influencerData = $this->mymodel->selectDataOne('influencer', ['username' => $usernameFromUrl]);
-                if ($influencerData) {
-                    $dt['influencer'] = $influencerData['id'];
-                    $dt['nama_creator'] = $influencerData['username'];
-                } else {
-                    $msg = "Username '$usernameFromUrl' tidak ditemukan di database influencer.";
-                    echo $this->template->alert_danger($msg);
-                    die;
-                }
-            } else {
-                $msg = "Link upload tidak valid atau tidak dapat mengambil username.";
-                echo $this->template->alert_danger($msg);
-                die;
-            }
+            $this->apply_link_upload_creator($dt);
         } else {
             $id_data = $dt['influencer'];
             $detail = $this->mymodel->selectWithQuery("SELECT * FROM influencer WHERE id = '$id_data'");

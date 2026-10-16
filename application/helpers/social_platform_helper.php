@@ -95,8 +95,91 @@ if (!function_exists('social_extract_url')) {
     {
         // \x{00A0}: copy-paste from browsers/WhatsApp often carries a non-breaking space.
         $text = trim(preg_replace('/[\s\x{00A0}]+/u', ' ', (string) $text) ?? (string) $text);
-        if (preg_match('#https?://\S+#i', $text, $m)) return rtrim($m[0], '.,;)');
-        return $text;
+        if (!preg_match('#https?://\S+#i', $text, $m)) return $text;
+        $url = rtrim($m[0], '.,;)');
+        // Click-tracking wrappers carry the real link in a query param (prod has
+        // google.com/url?q=https://www.tiktok.com/@.. pasted from Google Docs).
+        $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+        $wrapped = '';
+        if (preg_match('/(^|\.)google\.[a-z.]+$/', $host) && parse_url($url, PHP_URL_PATH) === '/url') $wrapped = strval($query['q'] ?? ($query['url'] ?? ''));
+        if (in_array($host, ['l.instagram.com', 'l.facebook.com', 'lm.facebook.com'], true)) $wrapped = strval($query['u'] ?? '');
+        return preg_match('#^https?://#i', $wrapped) ? $wrapped : $url;
+    }
+}
+
+if (!function_exists('parse_endorse_post_link')) {
+    /**
+     * Read the creator's username from an endorse link_upload (a post, not a profile: the
+     * stats sync fetches the post, and a profile URL answers "This post does not exist.").
+     * Same `next` contract as validate_social_profile_url(). ok with username '' means the
+     * link is fine but does not name its creator (YouTube watch links...): use the form's pick.
+     *
+     * @return array ['ok' => bool, 'url' => string, 'username' => string, 'msg' => string, 'next' => string]
+     */
+    function parse_endorse_post_link($platform, $link)
+    {
+        $platform = trim((string) $platform);
+        $url = social_extract_url($link);
+        $result = function ($ok, $username = '', $msg = '', $next = '') use ($url) {
+            return ['ok' => $ok, 'url' => $url, 'username' => $username, 'msg' => $msg, 'next' => $next];
+        };
+        $fail = function ($msg, $next = '') use ($result) { return $result(false, '', $msg, $next); };
+        if ($url === '' || preg_match('/\s/', $url)) return $fail('Link upload tidak valid.');
+
+        $detected = detect_platform_from_url($url);
+        if (isset(social_platform_domains()[$platform]) && $detected !== $platform) {
+            return $fail($detected !== ''
+                ? 'Link upload ini link ' . $detected . ', sedangkan Platform = ' . $platform . '. Ubah Platform ke ' . $detected . ' atau ganti link-nya.'
+                : 'Link upload bukan link ' . $platform . ' (domain tidak dikenal).');
+        }
+
+        $host = social_url_host($url);
+        $full = preg_match('#^[a-z][a-z0-9+.-]*://#i', $url) ? $url : 'https://' . $url;
+        $segments = array_values(array_filter(explode('/', (string) parse_url($full, PHP_URL_PATH)), 'strlen'));
+        $first = $segments[0] ?? '';
+        $second = $segments[1] ?? '';
+        $third = $segments[2] ?? '';
+        $named = function ($username) use ($result, $fail) {
+            return preg_match('/^[A-Za-z0-9._]{1,30}$/', $username)
+                ? $result(true, $username)
+                : $fail('Username pada link upload tidak valid.');
+        };
+
+        if ($platform === 'Tiktok') {
+            $example = 'Gunakan link video/foto TikTok, contoh https://www.tiktok.com/@username/video/123.';
+            if (in_array($host, ['vt.tiktok.com', 'vm.tiktok.com'], true) || $first === 't' || ($host === 'm.tiktok.com' && $first === 'v')) {
+                return $fail('Link share TikTok tidak bisa dibuka (mungkin kedaluwarsa). ' . $example, 'resolve');
+            }
+            if (strpos($first, '@') === 0 && in_array($second, ['video', 'photo'], true) && $third !== '') {
+                return $first === '@'
+                    ? $fail('Link TikTok ini tidak memuat username dan pemilik post tidak bisa dibaca. ' . $example, 'owner')
+                    : $named(substr($first, 1));
+            }
+            if (strpos($first, '@') === 0) return $fail('Ini link profil TikTok, bukan link video/foto. ' . $example);
+            return $fail($example);
+        }
+        if ($platform === 'Instagram') {
+            $example = 'Gunakan link post/reel Instagram, contoh https://www.instagram.com/p/KODE/ atau https://www.instagram.com/reel/KODE/.';
+            $postPaths = ['p', 'reel', 'reels', 'tv'];
+            if (in_array($first, $postPaths, true) && $second !== '') {
+                return $fail('Pemilik post Instagram ini tidak bisa dibaca. ' . $example, 'owner');
+            }
+            // Newer share format names the owner: /<user>/p/CODE, /<user>/reel/CODE (checked live 2026-10-16).
+            if (in_array($second, $postPaths, true) && $third !== '') return $named($first);
+            if ($first === 'stories' && $second !== '') return $named($second);
+            if ($first !== '' && $second === '') {
+                return $fail('Ini link profil Instagram (' . $first . '), bukan link post/reel, sehingga statistiknya tidak bisa diambil. ' . $example);
+            }
+            return $fail($example);
+        }
+        if ($platform === 'Threads') {
+            if (strpos($first, '@') === 0 && $second === 'post' && $third !== '') return $named(substr($first, 1));
+            return $fail('Gunakan link post Threads, contoh https://www.threads.com/@username/post/KODE.');
+        }
+        if ($platform === 'Twitter' && $second === 'status' && $third !== '') return $named(ltrim($first, '@'));
+        // Not auto-synced (YouTube, other Twitter/Facebook links): the creator comes from the form.
+        return $result(true);
     }
 }
 
