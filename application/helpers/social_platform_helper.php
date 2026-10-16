@@ -183,6 +183,40 @@ if (!function_exists('parse_endorse_post_link')) {
     }
 }
 
+if (!function_exists('pick_influencer_for_handle')) {
+    /**
+     * Pick the influencer row a post link's @handle belongs to. username alone is not enough:
+     * prod has typos with a correct URL (notesbymama -> @notes_mama), "(2)" duplicates
+     * (mayyasaragih(2)) and share links, so the profile URL's handle counts too.
+     * Ranking: the creator picked in the form, exact username, same platform, Aktif, oldest id.
+     *
+     * @return array|null the chosen row
+     */
+    function pick_influencer_for_handle(array $rows, $platform, $handle, $preferId = 0)
+    {
+        $handle = strtolower(ltrim(trim((string) $handle), '@'));
+        if ($handle === '') return null;
+        $ranked = [];
+        foreach ($rows as $row) {
+            $raw = strtolower(trim(strval($row['username'] ?? '')));
+            $name = ltrim(trim(preg_replace('/\s*\(\d+\)$/', '', $raw)), '@');
+            $profile = validate_social_profile_url(strval($row['type'] ?? ''), strval($row['url'] ?? ''));
+            $urlHandle = $profile['ok'] ? strtolower($profile['username']) : '';
+            if ($name !== $handle && $urlHandle !== $handle) continue;
+            $ranked[] = [[
+                intval($row['id'] ?? 0) === intval($preferId) ? 0 : 1,
+                $raw === $handle ? 0 : 1,
+                strval($row['type'] ?? '') === strval($platform) ? 0 : 1,
+                strval($row['status'] ?? '') === 'Aktif' ? 0 : 1,
+                intval($row['id'] ?? 0),
+            ], $row];
+        }
+        if (!$ranked) return null;
+        usort($ranked, function ($a, $b) { return $a[0] <=> $b[0]; });
+        return $ranked[0][1];
+    }
+}
+
 if (!function_exists('validate_social_profile_url')) {
     /**
      * Check an influencer profile URL against its declared type and return the canonical
