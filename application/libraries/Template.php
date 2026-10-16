@@ -2378,17 +2378,46 @@ class Template
      */
     function normalize_influencer_profile_url($type, $url)
     {
+        return $this->follow_social_link_steps('validate_social_profile_url', $type, $url);
+    }
+
+    /**
+     * Creator username of an endorse link_upload (parse_endorse_post_link() plus the same
+     * network steps). The returned url is the pasted link, cleaned, not the redirect target.
+     */
+    function endorse_link_owner($platform, $link)
+    {
+        $check = $this->follow_social_link_steps('parse_endorse_post_link', $platform, $link);
+        $check['url'] = social_extract_url($link);
+        return $check;
+    }
+
+    /**
+     * Run $parse, then while it asks (`next`): follow the share redirect ('resolve') or ask the
+     * platform who owns the post ('owner') and parse again. An owner answer is a bare username,
+     * so it is turned back into a profile/post-shaped result here.
+     */
+    private function follow_social_link_steps($parse, $type, $url)
+    {
         if (!function_exists('validate_social_profile_url')) {
             $CI =& get_instance();
             $CI->load->helper('social_platform');
         }
-        $check = validate_social_profile_url($type, $url);
+        $check = $parse($type, $url);
         for ($step = 0; $step < 2 && !$check['ok'] && $check['next'] !== ''; $step++) {
-            $found = $check['next'] === 'resolve'
-                ? $this->resolve_social_redirect($check['url'])
-                : $this->lookup_social_post_owner($type, $check['url']);
-            if ($found === '') return $check; // its msg already says what to paste instead
-            $check = validate_social_profile_url($type, $found);
+            if ($check['next'] === 'resolve') {
+                $found = $this->resolve_social_redirect($check['url']);
+                if ($found === '') return $check; // its msg already says what to paste instead
+                $check = $parse($type, $found);
+                continue;
+            }
+            $owner = $this->lookup_social_post_owner($type, $check['url']);
+            if ($owner === '') return $check;
+            $check = $parse === 'validate_social_profile_url'
+                ? validate_social_profile_url($type, $owner)
+                : (preg_match('/^[A-Za-z0-9._]{1,30}$/', $owner)
+                    ? ['ok' => true, 'url' => $check['url'], 'username' => $owner, 'msg' => '', 'next' => '']
+                    : $check);
         }
         return $check;
     }
